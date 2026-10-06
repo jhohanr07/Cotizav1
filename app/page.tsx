@@ -1282,7 +1282,7 @@ function CalculadoraFinanciamientoBNH() {
               {/* ===== CONTADO ===== */}
               <div className="mb-6 rounded-3xl border border-gray-200 bg-gray-50 p-5">
                 <h3 className="mb-4 text-xl font-bold text-gray-900">
-                  De contado
+                  Contado
                 </h3>
 
                 <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
