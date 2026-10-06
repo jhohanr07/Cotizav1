@@ -996,7 +996,7 @@ function CalculadoraFinanciamientoBNH() {
 
               <div>
                 <Label className="mb-2 block">
-                  Precio de crédito (base imponible)
+                  Precio
                 </Label>
 
                 <Input
