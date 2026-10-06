@@ -1273,8 +1273,8 @@ function CalculadoraFinanciamientoBNH() {
                 <Alert className="mb-4 border-amber-200 bg-amber-50">
                   <AlertDescription>
                     {selectedEquipoId
-                      ? "Este equipo no tiene I.V.A. ajustado en la lista; se usa el I.V.A. normal."
-                      : "Seleccione un equipo de la lista para aplicar su I.V.A. ajustado; mientras tanto se usa el I.V.A. normal."}
+                      ? "El I.V.A. normal."
+                      : "Seleccione un equipo de la lista para aplicar su I.V.A. ; mientras tanto se usa el I.V.A. normal."}
                   </AlertDescription>
                 </Alert>
               )}
@@ -1458,7 +1458,7 @@ function TotalBox({
   return (
     <div className="mt-4 rounded-2xl border border-[#0d6f91]/30 bg-[#0d6f91]/10 p-4">
       <p className="text-sm font-medium text-[#0d6f91]">
-        {title} (base + I.V.A.{ajustado ? " ajustado" : ""})
+        {title} (base + I.V.A.{ajustado ? " " : ""})
       </p>
 
       <p className="mt-1 text-3xl font-extrabold tracking-tight text-gray-900">
