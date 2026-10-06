@@ -1240,10 +1240,10 @@ function CalculadoraFinanciamientoBNH() {
               <div className="mb-4 flex items-center justify-between gap-3 rounded-2xl border border-gray-200 bg-white px-4 py-3">
                 <div>
                   <p className="text-sm font-semibold text-gray-800">
-                    Ajustar I.V.A.
+                    Aplicar Ajuste
                   </p>
                   <p className="text-xs text-gray-500">
-                    Usa el I.V.A. ajustado de la lista de equipos
+                    
                   </p>
                 </div>
 
@@ -1294,8 +1294,8 @@ function CalculadoraFinanciamientoBNH() {
                   <Item
                     label={
                       usaAjuste
-                        ? "I.V.A. ajustado"
-                        : "I.V.A. (monto ÷ 1,03 × 16%)"
+                        ? "I.V.A. "
+                        : "I.V.A. "
                     }
                     value={formatCurrency(contadoIva)}
                   />
