@@ -1303,8 +1303,7 @@ function CalculadoraFinanciamientoBNH() {
 
                 <TotalBox
                   title="Total a pagar"
-                  base={contadoMonto}
-                  iva={contadoIva}
+                  
                   total={contadoTotal}
                   ajustado={usaAjuste}
                 />
