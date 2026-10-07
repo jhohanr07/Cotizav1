@@ -603,6 +603,13 @@ function sendQuoteEmail_(data, vendedorEmail, pdfBlob) {
   MailApp.sendEmail(data.leadEmail, subject, "", options);
 }
 
+/**
+ * Cuerpo del correo. Estructura:
+ *  - Equipo / Categoría
+ *  - De contado: precio, impuesto a pagar en Bs., total a pagar precio contado
+ *  - Crédito: inicial, cantidad de cuotas, cuota mensual,
+ *             cuota especial de I.V.A. en Bs., total a pagar financiado
+ */
 function buildQuoteEmailHtml_(data) {
   // Solo se acepta un logo por https (evita inyectar URLs arbitrarias en el correo)
   var logo = /^https:\/\/[^\s"'<>]+$/.test(String(data.logoUrl || ""))
@@ -619,13 +626,11 @@ function buildQuoteEmailHtml_(data) {
     row_("Equipo", escapeHtml_(data.equipo)) +
     row_("Categoría", escapeHtml_(data.categoria)) +
     contadoEmailRows_(data) +
-    row_("Base imponible", formatMoney_(data.basePrice)) +
-    row_(ivaCreditoLabel_(data), formatMoney_(data.creditoIva)) +
-    row_("Total (base + I.V.A.)", "<strong>" + formatMoney_(data.creditoTotal) + "</strong>") +
     row_("Monto inicial", formatMoney_(data.initialAmount)) +
     row_("Cantidad de cuotas", String(Number(data.installments) || 0)) +
     row_("Cuota mensual", "<strong>" + formatMoney_(data.monthlyPayment) + "</strong>", true) +
-    row_("Total a pagar financiado", formatMoney_(data.totalToPay)) +
+    row_("Cuota especial de I.V.A. en Bs.", formatMoney_(data.ivaToPay)) +
+    row_("Total a pagar financiado", "<strong>" + formatMoney_(data.totalToPay) + "</strong>") +
     "</table>" +
     '<p style="margin-top:16px;">Vendedor a cargo: <strong>' + escapeHtml_(data.vendedorName) + "</strong></p>" +
     '<p style="color:#888; font-size:12px;">Esta propuesta es una simulación comercial y puede variar según las condiciones finales de la operación.</p>' +
@@ -633,12 +638,13 @@ function buildQuoteEmailHtml_(data) {
   );
 }
 
+// Etiquetas del I.V.A. usadas en el PDF.
 function ivaCreditoLabel_(data) {
   return data.ajustado ? "I.V.A. (ajustado)" : "I.V.A. (16%)";
 }
 
 function ivaContadoLabel_(data) {
-  return data.ajustado ? "I.V.A. (ajustado)" : "I.V.A. (monto ÷ 1,03 × 16%)";
+  return data.ajustado ? "I.V.A. (ajustado)" : "I.V.A. (16%)";
 }
 
 function contadoEmailRows_(data) {
@@ -646,8 +652,8 @@ function contadoEmailRows_(data) {
   return (
     '<tr><td colspan="2" style="padding:8px 0 2px; font-weight:bold; color:' + BRAND_COLOR + ';">De contado</td></tr>' +
     row_("Precio de contado", formatMoney_(data.contadoPrecio)) +
-    row_(ivaContadoLabel_(data), formatMoney_(data.contadoIva)) +
-    row_("Total de contado (base + I.V.A.)", "<strong>" + formatMoney_(data.contadoTotal) + "</strong>") +
+    row_("Impuesto a pagar en Bs.", formatMoney_(data.contadoIva)) +
+    row_("Total a pagar precio contado", "<strong>" + formatMoney_(data.contadoTotal) + "</strong>") +
     '<tr><td colspan="2" style="padding:12px 0 2px; font-weight:bold; color:' + BRAND_COLOR + ';">Crédito</td></tr>'
   );
 }
@@ -667,7 +673,7 @@ function row_(label, value, highlight) {
 /**
  * Genera el PDF de la cotización con DocumentApp y lo devuelve como Blob.
  * No incluye RIF ni dirección del cliente (a propósito): solo nombre,
- * teléfono y correo.
+ * teléfono y correo. Está compactado para que quede en una sola hoja.
  */
 function buildQuotePdfBlob_(data, numero) {
   var tz = Session.getScriptTimeZone();
@@ -678,27 +684,42 @@ function buildQuotePdfBlob_(data, numero) {
 
   try {
     var body = doc.getBody();
-    body.setMarginTop(28).setMarginBottom(28).setMarginLeft(40).setMarginRight(40);
+    body.setMarginTop(24).setMarginBottom(24).setMarginLeft(40).setMarginRight(40);
 
     appendLogo_(body, data.logoUrl);
 
     var title = body.appendParagraph("Cotización de Servicios");
-    title.setFontSize(22).setBold(true).setForegroundColor(DARK_COLOR);
-    title.setSpacingBefore(6).setSpacingAfter(2);
+    title.setFontSize(20).setBold(true).setForegroundColor(DARK_COLOR);
+    title.setSpacingBefore(2).setSpacingAfter(0);
 
     var subtitle = body.appendParagraph(EMISOR.nombre);
-    subtitle.setFontSize(10).setForegroundColor("#666666").setSpacingAfter(16);
+    subtitle.setFontSize(10).setForegroundColor("#666666").setSpacingBefore(0).setSpacingAfter(8);
 
     appendClientIssuerTable_(body, data);
 
     var meta = body.appendParagraph("N° de cotización: " + numero + "      Fecha: " + fecha);
-    meta.setFontSize(10).setForegroundColor("#333333").setSpacingBefore(12).setSpacingAfter(14);
+    meta.setFontSize(10).setForegroundColor("#333333").setSpacingBefore(8).setSpacingAfter(8);
 
     appendProductTable_(body, data);
     appendSummary_(body, data);
     appendFinancingDetail_(body, data);
     appendConditions_(body);
     appendFooter_(body);
+
+    // Quita el párrafo vacío inicial que crea Docs por defecto (ahorra espacio).
+    try {
+      var first = body.getChild(0);
+      if (
+        body.getNumChildren() > 1 &&
+        first.getType() === DocumentApp.ElementType.PARAGRAPH &&
+        first.asParagraph().getText() === "" &&
+        first.asParagraph().getNumChildren() === 0
+      ) {
+        first.removeFromParent();
+      }
+    } catch (trimErr) {
+      // No es crítico si no se puede quitar.
+    }
 
     doc.saveAndClose();
 
@@ -722,8 +743,8 @@ function appendLogo_(body, logoUrl) {
     var imgBlob = UrlFetchApp.fetch(logoUrl).getBlob();
     var img = body.appendImage(imgBlob);
     var ratio = img.getHeight() / img.getWidth();
-    img.setWidth(130);
-    img.setHeight(Math.round(130 * ratio));
+    img.setWidth(110);
+    img.setHeight(Math.round(110 * ratio));
   } catch (err) {
     // Si no se puede descargar el logo, el PDF se genera sin imagen.
   }
@@ -787,13 +808,6 @@ function appendProductTable_(body, data) {
   }
 }
 
-function scenarioTitle_(body, text) {
-  var t = body.appendParagraph(text);
-  t.setAlignment(DocumentApp.HorizontalAlignment.RIGHT);
-  t.setBold(true).setFontSize(12).setForegroundColor(BRAND_COLOR);
-  t.setSpacingBefore(10).setSpacingAfter(2);
-}
-
 function hasContado_(data) {
   return (
     data.contadoTotal !== undefined &&
@@ -802,39 +816,65 @@ function hasContado_(data) {
   );
 }
 
+/**
+ * Resumen del PDF: solo el bloque "DE CONTADO" (sin texto de cálculo en el I.V.A.).
+ * Si la cotización no trae datos de contado, se muestra el bloque "CRÉDITO"
+ * para que el resumen nunca quede vacío.
+ */
 function appendSummary_(body, data) {
-  body.appendParagraph("").setSpacingAfter(2);
+  var sp = body.appendParagraph("");
+  sp.setSpacingBefore(0).setSpacingAfter(0).setFontSize(4);
 
-  // Escenario 1: De contado (solo si el front envió los datos)
+  var cells;
   if (hasContado_(data)) {
-    scenarioTitle_(body, "DE CONTADO");
-    summaryLine_(body, "Precio de contado (base)", formatMoney_(data.contadoPrecio), false);
-    summaryLine_(body, ivaContadoLabel_(data), formatMoney_(data.contadoIva), false);
-    summaryLine_(body, "TOTAL DE CONTADO", formatMoney_(data.contadoTotal), true);
-
-    // Escenario 2: Crédito
-    scenarioTitle_(body, "CRÉDITO");
+    cells = [
+      ["DE CONTADO", ""],
+      ["Precio de contado (base)", formatMoney_(data.contadoPrecio)],
+      [ivaContadoLabel_(data), formatMoney_(data.contadoIva)],
+      ["TOTAL DE CONTADO", formatMoney_(data.contadoTotal)],
+    ];
+  } else {
+    cells = [
+      ["CRÉDITO", ""],
+      ["Base imponible", formatMoney_(data.basePrice)],
+      [ivaCreditoLabel_(data), formatMoney_(data.creditoIva)],
+      ["TOTAL (base + I.V.A.)", formatMoney_(data.creditoTotal)],
+    ];
   }
 
-  summaryLine_(body, "Base imponible", formatMoney_(data.basePrice), false);
-  summaryLine_(body, ivaCreditoLabel_(data), formatMoney_(data.creditoIva), false);
-  summaryLine_(body, "TOTAL (base + I.V.A.)", formatMoney_(data.creditoTotal), true);
-}
+  var table = body.appendTable(cells);
+  table.setBorderWidth(0);
+  table.setColumnWidth(0, 330);
+  table.setColumnWidth(1, 150);
 
-function summaryLine_(body, label, value, big) {
-  var p = body.appendParagraph(label + "      " + value);
-  p.setAlignment(DocumentApp.HorizontalAlignment.RIGHT);
-  p.setFontSize(big ? 13 : 10.5);
-  if (big) {
-    p.setBold(true).setForegroundColor(BRAND_COLOR);
-    p.setSpacingBefore(4);
+  var lastRow = table.getNumRows() - 1;
+  for (var i = 0; i <= lastRow; i++) {
+    var tr = table.getRow(i);
+    for (var c = 0; c < 2; c++) {
+      var cell = tr.getCell(c);
+      cell.setPaddingTop(2).setPaddingBottom(2);
+
+      var p = cell.getChild(0).asParagraph();
+      p.setSpacingBefore(0).setSpacingAfter(0);
+      p.setAlignment(
+        c === 1 ? DocumentApp.HorizontalAlignment.RIGHT : DocumentApp.HorizontalAlignment.LEFT
+      );
+
+      if (i === 0) {
+        p.setBold(true).setFontSize(12).setForegroundColor(BRAND_COLOR);
+      } else if (i === lastRow) {
+        p.setBold(true).setFontSize(11).setForegroundColor(BRAND_COLOR);
+      } else {
+        p.setBold(false).setFontSize(10).setForegroundColor("#333333");
+      }
+    }
   }
 }
 
 function appendFinancingDetail_(body, data) {
   var title = body.appendParagraph("Detalle de Financiamiento");
   title.setBold(true).setFontSize(12).setForegroundColor(BRAND_COLOR);
-  title.setSpacingBefore(20).setSpacingAfter(6);
+  title.setSpacingBefore(12).setSpacingAfter(4);
 
   var rows = [
     ["Categoría", data.categoria || "-"],
@@ -849,16 +889,20 @@ function appendFinancingDetail_(body, data) {
 
   for (var r = 0; r < table.getNumRows(); r++) {
     var row = table.getRow(r);
-    row.getCell(0).getChild(0).asParagraph().setFontSize(10).setForegroundColor("#333333");
+    for (var c = 0; c < 2; c++) {
+      row.getCell(c).setPaddingTop(1).setPaddingBottom(1);
+    }
+    var labelP = row.getCell(0).getChild(0).asParagraph();
+    labelP.setFontSize(10).setForegroundColor("#333333").setSpacingBefore(0).setSpacingAfter(0);
     var valueP = row.getCell(1).getChild(0).asParagraph();
-    valueP.setFontSize(10).setBold(true);
+    valueP.setFontSize(10).setBold(true).setSpacingBefore(0).setSpacingAfter(0);
   }
 }
 
 function appendConditions_(body) {
   var title = body.appendParagraph("CONDICIONES");
   title.setBold(true).setFontSize(11).setForegroundColor(BRAND_COLOR);
-  title.setSpacingBefore(20).setSpacingAfter(4);
+  title.setSpacingBefore(12).setSpacingAfter(3);
 
   var lines = [
     "Vigencia de la cotización: 7 días naturales.",
@@ -869,7 +913,7 @@ function appendConditions_(body) {
 
   for (var i = 0; i < lines.length; i++) {
     var p = body.appendParagraph("• " + lines[i]);
-    p.setFontSize(9.5).setForegroundColor("#333333").setSpacingAfter(2);
+    p.setFontSize(9.5).setForegroundColor("#333333").setSpacingBefore(0).setSpacingAfter(1);
   }
 }
 
@@ -877,7 +921,7 @@ function appendFooter_(body) {
   var footer = body.appendParagraph(
     EMISOR.web + "   ·   " + EMISOR.instagram + "   ·   " + EMISOR.direccionLineas.join(", ")
   );
-  footer.setFontSize(8.5).setForegroundColor("#888888").setSpacingBefore(22);
+  footer.setFontSize(8.5).setForegroundColor("#888888").setSpacingBefore(12).setSpacingAfter(0);
 }
 
 function formatMoney_(n) {
