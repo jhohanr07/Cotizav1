@@ -1312,7 +1312,7 @@ function CalculadoraFinanciamientoBNH() {
               {/* ===== CRÉDITO ===== */}
               <div className="rounded-3xl border border-gray-200 bg-gray-50 p-5">
                 <h3 className="mb-4 text-xl font-bold text-gray-900">
-                  Pago a Crédito
+                  Precio a Crédito
                 </h3>
 
                 <div className="mb-4 rounded-3xl bg-[#0b0b0b] p-8 text-white shadow-lg">
