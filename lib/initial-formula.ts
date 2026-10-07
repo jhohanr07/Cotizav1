@@ -103,3 +103,57 @@ export function evaluateInitialFormula(
   const factor = Math.pow(10, digits);
   return Math.ceil(value * factor - 1e-9) / factor;
 }
+
+/**
+ * Evalúa la fórmula de la cuota mensual de la hoja "CATEGORIA", tal cual, por ejemplo:
+ *   CEILING(((Precio / 1.03) - Inicial) *1.20 / Cuotas, 10)
+ * "Precio", "Inicial" y "Cuotas" se reemplazan por sus valores. El último argumento es el
+ * múltiplo al que se redondea hacia arriba. También acepta TECHO / MULTIPLO.SUPERIOR y ";"
+ * como separador. Devuelve null si no se puede interpretar.
+ */
+export function evaluateInstallmentFormula(
+  formula: string | null | undefined,
+  vars: { precio: number; inicial: number; cuotas: number }
+): number | null {
+  if (!formula) return null;
+  const { precio, inicial, cuotas } = vars;
+  if (![precio, inicial, cuotas].every(Number.isFinite) || cuotas <= 0) {
+    return null;
+  }
+
+  const call =
+    /^\s*=?\s*(?:ceiling|techo|multiplo\.superior)\s*\(([\s\S]*)\)\s*$/i.exec(
+      formula
+    );
+  if (!call) return null;
+
+  const inner = call[1];
+
+  let exprPart: string;
+  let stepPart: string;
+  const semi = inner.lastIndexOf(";");
+  if (semi !== -1) {
+    exprPart = inner.slice(0, semi);
+    stepPart = inner.slice(semi + 1);
+  } else {
+    const m = /^([\s\S]*),\s*(\d+(?:[.,]\d+)?)\s*$/.exec(inner);
+    if (!m) return null;
+    exprPart = m[1];
+    stepPart = m[2];
+  }
+
+  const step = Number(stepPart.trim().replace(",", "."));
+  if (!Number.isFinite(step) || step <= 0) return null;
+
+  const withVars = exprPart
+    .replace(/precio/gi, `(${precio})`)
+    .replace(/inicial/gi, `(${inicial})`)
+    .replace(/cuotas/gi, `(${cuotas})`)
+    .replace(/(\d),(\d)/g, "$1.$2");
+
+  const value = parseNumberOrExpression(withVars);
+  if (value === null || value <= 0) return null;
+
+  // CEILING(valor; paso): redondeo hacia arriba al múltiplo de "paso"
+  return Math.ceil(value / step - 1e-9) * step;
+}
