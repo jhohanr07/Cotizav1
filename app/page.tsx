@@ -222,8 +222,7 @@ function CalculadoraFinanciamientoBNH() {
   const [ivaFinancing, setIvaFinancing] = useState<PaymentMode>("si");
   const [installments, setInstallments] = useState("");
 
-  // Interruptor "Aplicar Ajuste": SOLO afecta la sección Contado
-  // (usa el "IVA ajustado", columna G de PRECIO EQUIPOS)
+  // Interruptor "Ajustar": usa el "IVA ajustado" (columna G de PRECIO EQUIPOS)
   const [ajustarIva, setAjustarIva] = useState(false);
 
   // --- Categorías y condiciones (hoja CATEGORIA) ---
@@ -417,7 +416,7 @@ function CalculadoraFinanciamientoBNH() {
     Math.max(suggestedInitialAmount, minInitialAmount)
   );
 
-  // I.V.A. normal del crédito: (precio / 1,03) x 16 %
+  // I.V.A. del crédito: (precio / 1,03) x 16 %
   const vatAmount = (safeBaseForRules / CONTADO_DIVISOR) * VAT_RATE;
 
   // --- Contado: I.V.A. = (monto / 1,03) x 16 % ---
@@ -425,31 +424,18 @@ function CalculadoraFinanciamientoBNH() {
     Number.isFinite(numericContado) && numericContado > 0 ? numericContado : 0;
   const contadoIvaNormal = (contadoMonto / CONTADO_DIVISOR) * VAT_RATE;
 
-  // --- IVA ajustado: se toma de la columna G de la lista de equipos ---
+  // --- "Ajustar": solo cambia el I.V.A. mostrado; se toma de la columna G de la lista ---
   const equipoSeleccionado = equipos.find((e) => e.id === selectedEquipoId);
   const ivaAjustadoLista = equipoSeleccionado?.ivaAjustado ?? 0;
   const ivaAjustadoDisponible = ivaAjustadoLista > 0;
+  const usaAjuste = ajustarIva && ivaAjustadoDisponible;
 
-  // El interruptor "Aplicar Ajuste" solo cambia la sección CONTADO
-  const usaAjusteContado = ajustarIva && ivaAjustadoDisponible;
-
-  // CRÉDITO: el I.V.A. siempre es el ajustado (sin importar el interruptor).
-  // Si el equipo no tiene I.V.A. ajustado en la hoja, se usa el I.V.A. normal como respaldo.
-  const creditoUsaAjustado = ivaAjustadoDisponible;
   const creditoIva =
-    safeBaseForRules > 0
-      ? creditoUsaAjustado
-        ? ivaAjustadoLista
-        : vatAmount
-      : 0;
+    safeBaseForRules > 0 ? (usaAjuste ? ivaAjustadoLista : vatAmount) : 0;
   const creditoTotal = safeBaseForRules + creditoIva;
 
   const contadoIva =
-    contadoMonto > 0
-      ? usaAjusteContado
-        ? ivaAjustadoLista
-        : contadoIvaNormal
-      : 0;
+    contadoMonto > 0 ? (usaAjuste ? ivaAjustadoLista : contadoIvaNormal) : 0;
   const contadoTotal = contadoMonto + contadoIva;
 
   useEffect(() => {
@@ -584,19 +570,12 @@ function CalculadoraFinanciamientoBNH() {
         : 0;
 
     const safeVat = safeBase > 0 ? creditoIva : 0;
-
-    // I.V.A. que se muestra en "I.V.A. a pagar": siempre el ajustado,
-    // se financie o no el I.V.A.
-    const ivaToPayDisplay = safeVat;
-
-    // I.V.A. que realmente se suma al total: solo si se paga por separado (no financiado),
-    // para no duplicarlo cuando ya va dentro del financiamiento.
     const ivaSeparate = ivaFinancing === "no" ? safeVat : 0;
 
     const empty = {
       roundedMonthlyPayment: 0,
       totalToPay: safeInitial,
-      ivaToPayField: ivaToPayDisplay,
+      ivaToPayField: ivaSeparate,
       financedAmount: 0,
     };
 
@@ -647,7 +626,7 @@ function CalculadoraFinanciamientoBNH() {
     return {
       roundedMonthlyPayment,
       totalToPay,
-      ivaToPayField: ivaToPayDisplay,
+      ivaToPayField: ivaSeparate,
       financedAmount,
     };
   }, [
@@ -725,7 +704,7 @@ function CalculadoraFinanciamientoBNH() {
         ...(contadoMonto > 0
           ? { contadoPrecio: contadoMonto, contadoIva, contadoTotal }
           : {}),
-        ajustado: usaAjusteContado,
+        ajustado: usaAjuste,
         logoUrl: `${window.location.origin}/logo-bnh.jpeg`,
       });
 
@@ -1251,14 +1230,14 @@ function CalculadoraFinanciamientoBNH() {
             </CardHeader>
 
             <CardContent>
-              {/* Interruptor: afecta únicamente el I.V.A. de la sección "Contado" */}
+              {/* Interruptor global: afecta el I.V.A. de los cuadros "Base + I.V.A." */}
               <div className="mb-4 flex items-center justify-between gap-3 rounded-2xl border border-gray-200 bg-white px-4 py-3">
                 <div>
                   <p className="text-sm font-semibold text-gray-800">
                     Aplicar Ajuste
                   </p>
                   <p className="text-xs text-gray-500">
-                    Solo aplica a la sección Contado
+                    
                   </p>
                 </div>
 
@@ -1266,7 +1245,7 @@ function CalculadoraFinanciamientoBNH() {
                   type="button"
                   role="switch"
                   aria-checked={ajustarIva}
-                  aria-label="Ajustar I.V.A. de contado"
+                  aria-label="Ajustar I.V.A."
                   onClick={() => setAjustarIva((v) => !v)}
                   className="flex items-center"
                 >
@@ -1288,8 +1267,8 @@ function CalculadoraFinanciamientoBNH() {
                 <Alert className="mb-4 border-amber-200 bg-amber-50">
                   <AlertDescription>
                     {selectedEquipoId
-                      ? "Este equipo no tiene I.V.A. ajustado en la lista; en Contado se usa el I.V.A. normal."
-                      : "Seleccione un equipo de la lista para aplicar su I.V.A. ajustado en Contado; mientras tanto se usa el I.V.A. normal."}
+                      ? "El I.V.A. normal."
+                      : "Seleccione un equipo de la lista para aplicar su I.V.A. ; mientras tanto se usa el I.V.A. normal."}
                   </AlertDescription>
                 </Alert>
               )}
