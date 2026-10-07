@@ -26,7 +26,10 @@ export type PlazoCategoria = {
 };
 
 export type ReglaInicial = {
-  pct: number;
+  // Texto de la fórmula de la hoja, ej. "REDONDEAR.MAS(( Precio/1,03)* 0.25; -2)"
+  formula: string | null;
+  // Porcentaje detectado (solo respaldo y etiqueta)
+  pct: number | null;
   // Dígitos del REDONDEAR.MAS de la hoja (ej. -2 = a centenas). null = sin redondeo definido.
   digitos: number | null;
 };
