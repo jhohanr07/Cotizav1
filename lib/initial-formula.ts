@@ -1,0 +1,105 @@
+// Evalúa la fórmula de la hoja "CATEGORIA" tal cual está escrita, por ejemplo:
+//   REDONDEAR.MAS(( Precio/1,03)* 0.25; -2)
+// Solo admite números, "Precio", + - * / y paréntesis (no ejecuta código).
+
+function parseNumberOrExpression(expr: string): number | null {
+  const src = expr.replace(/\s+/g, "");
+  if (!/^[0-9.+\-*/()]+$/.test(src)) return null;
+
+  let pos = 0;
+
+  const peek = () => src[pos];
+
+  function parseExpr(): number | null {
+    let left = parseTerm();
+    if (left === null) return null;
+    while (peek() === "+" || peek() === "-") {
+      const op = src[pos++];
+      const right = parseTerm();
+      if (right === null) return null;
+      left = op === "+" ? left + right : left - right;
+    }
+    return left;
+  }
+
+  function parseTerm(): number | null {
+    let left = parseFactor();
+    if (left === null) return null;
+    while (peek() === "*" || peek() === "/") {
+      const op = src[pos++];
+      const right = parseFactor();
+      if (right === null) return null;
+      if (op === "/" && right === 0) return null;
+      left = op === "*" ? left * right : left / right;
+    }
+    return left;
+  }
+
+  function parseFactor(): number | null {
+    if (peek() === "-") {
+      pos++;
+      const v = parseFactor();
+      return v === null ? null : -v;
+    }
+    if (peek() === "(") {
+      pos++;
+      const v = parseExpr();
+      if (v === null || peek() !== ")") return null;
+      pos++;
+      return v;
+    }
+    const m = /^\d+(\.\d+)?|^\.\d+/.exec(src.slice(pos));
+    if (!m) return null;
+    pos += m[0].length;
+    return Number(m[0]);
+  }
+
+  const result = parseExpr();
+  return result !== null && pos === src.length && Number.isFinite(result)
+    ? result
+    : null;
+}
+
+/** Devuelve el valor de la fórmula para ese precio, o null si no se puede interpretar. */
+export function evaluateInitialFormula(
+  formula: string | null | undefined,
+  precio: number
+): number | null {
+  if (!formula || !Number.isFinite(precio)) return null;
+
+  const call = /^\s*=?\s*(?:redondear\.mas|roundup)\s*\(([\s\S]*)\)\s*$/i.exec(
+    formula
+  );
+  if (!call) return null;
+
+  const inner = call[1];
+
+  // Separador de argumentos: ";" (o una coma final seguida del entero de redondeo)
+  let exprPart: string;
+  let digitsPart: string;
+  const semi = inner.lastIndexOf(";");
+  if (semi !== -1) {
+    exprPart = inner.slice(0, semi);
+    digitsPart = inner.slice(semi + 1);
+  } else {
+    const m = /^([\s\S]*),\s*(-?\d+)\s*$/.exec(inner);
+    if (!m) return null;
+    exprPart = m[1];
+    digitsPart = m[2];
+  }
+
+  if (!/^\s*-?\d+\s*$/.test(digitsPart)) return null;
+  const digits = Number(digitsPart);
+
+  // "Precio" -> valor; coma decimal (1,03) -> punto
+  const withPrice = exprPart
+    .replace(/precio/gi, `(${precio})`)
+    .replace(/(\d),(\d)/g, "$1.$2");
+
+  const value = parseNumberOrExpression(withPrice);
+  if (value === null || value < 0) return null;
+
+  // REDONDEAR.MAS: redondeo hacia arriba a "digits" decimales (-2 = centenas)
+  const factor = Math.pow(10, digits);
+  return Math.ceil(value * factor - 1e-9) / factor;
+}
