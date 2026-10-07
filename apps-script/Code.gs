@@ -19,7 +19,7 @@
  *  1b) "CATEGORIA"  (condiciones de financiamiento por categoría)
  *     Encabezados fila 1: Categoria | Inicial minima | Inicial sugerida | 12 | 15 | 18
  *     - Columna A alimenta el desplegable de categoría (valores únicos).
- *     - Inicial minima / sugerida: texto tipo "REDONDEAR.MAS(Precio*0.20; -2)"
+ *     - Inicial minima / sugerida: texto tipo "REDONDEAR.MAS(( Precio/1,03)* 0.25; -2)"
  *       (se lee el porcentaje que multiplica a "Precio" y, si existe, el
  *       redondeo) o directamente un número (0.20 / 20%).
  *     - Columnas 12 / 15 / 18 (plazos en meses): texto tipo
@@ -266,26 +266,45 @@ function getCategorias_() {
   });
 }
 
-/** "REDONDEAR.MAS(Precio*0.20; -2)" | 0.2 | "20%" -> { pct: 0.2, digitos: -2 | null } */
+/**
+ * Regla de inicial. Devuelve el texto de la fórmula tal cual (el front la evalúa:
+ * "REDONDEAR.MAS(( Precio/1,03)* 0.25; -2)") y, como respaldo/etiqueta, el
+ * porcentaje y el redondeo. También acepta un número (0.20 / 20%).
+ */
 function parseInitialRule_(cell) {
   if (cell === "" || cell === null || cell === undefined) return null;
 
   if (typeof cell === "number") {
     if (cell <= 0) return null;
-    return { pct: cell > 1 ? cell / 100 : cell, digitos: null };
+    return { pct: cell > 1 ? cell / 100 : cell, digitos: null, formula: null };
   }
 
   var text = String(cell);
-  var m = text.match(/precio\s*\*\s*(\d+(?:[.,]\d+)?)/i) || text.match(/(\d+(?:[.,]\d+)?)\s*%/);
-  if (!m) return null;
 
-  var pct = parseFloat(m[1].replace(",", "."));
-  if (!isFinite(pct) || pct <= 0) return null;
-  if (pct > 1) pct = pct / 100;
+  // Porcentaje: el último factor "* 0.25" de la fórmula (o "20%")
+  var pct = null;
+  var re = /\*\s*(\d+(?:[.,]\d+)?)(?![.,\d])/g;
+  var m;
+  while ((m = re.exec(text)) !== null) {
+    var v = parseFloat(m[1].replace(",", "."));
+    if (isFinite(v) && v > 0 && v <= 1) pct = v;
+  }
+  if (pct === null) {
+    var mp = text.match(/(\d+(?:[.,]\d+)?)\s*%/);
+    if (mp) pct = parseFloat(mp[1].replace(",", ".")) / 100;
+  }
 
-  // Redondeo opcional: el argumento que sigue a "Precio*0.25", ej. "; -2)"
-  var d = text.match(/precio\s*\*\s*\d+(?:[.,]\d+)?(?![.,\d])\s*[;,]\s*(-?\d+)\s*\)/i);
-  return { pct: pct, digitos: d ? Number(d[1]) : null };
+  // Redondeo: el entero que cierra la función, ej. "; -2)"
+  var d = text.match(/[;]\s*(-?\d+)\s*\)\s*$/) || text.match(/,\s*(-?\d+)\s*\)\s*$/);
+
+  var hasFormula = /redondear|roundup/i.test(text);
+  if (pct === null && !hasFormula) return null;
+
+  return {
+    pct: pct,
+    digitos: d ? Number(d[1]) : null,
+    formula: hasFormula ? text.trim() : null,
+  };
 }
 
 /** "=(1.30 ^ (1 / 18))" -> { factor: 1.30, tasaMensual: 1.30^(1/18) - 1 }. "Sin calculo"/vacío -> null */
