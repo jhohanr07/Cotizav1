@@ -386,15 +386,6 @@ function CalculadoraFinanciamientoBNH() {
     return Math.max(value, MIN_INITIAL_AMOUNT);
   }, [categoryConfig, safeBaseForRules]);
 
-  // Inicial que se autocompleta: la mínima (entera)
-  const autoInitialAmount = useMemo(
-    () =>
-      categoryConfig?.minDigits === null || !categoryConfig
-        ? roundUpToMultiple(minInitialAmount, INITIAL_STEP)
-        : Math.ceil(minInitialAmount),
-    [categoryConfig, minInitialAmount]
-  );
-
   const suggestedInitialAmount = useMemo(() => {
     if (!categoryConfig) return MIN_INITIAL_AMOUNT;
     return Math.max(
@@ -405,6 +396,11 @@ function CalculadoraFinanciamientoBNH() {
       MIN_INITIAL_AMOUNT
     );
   }, [categoryConfig, safeBaseForRules]);
+
+  // La inicial que se autocompleta es siempre la sugerida (nunca menor a la mínima)
+  const autoInitialAmount = Math.ceil(
+    Math.max(suggestedInitialAmount, minInitialAmount)
+  );
 
   // I.V.A. del crédito: (precio / 1,03) x 16 %
   const vatAmount = (safeBaseForRules / CONTADO_DIVISOR) * VAT_RATE;
