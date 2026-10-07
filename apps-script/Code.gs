@@ -906,9 +906,8 @@ function appendConditions_(body) {
 
   var lines = [
     "Vigencia de la cotización: 7 días naturales.",
-    "Tiempo estimado de entrega: 5 días hábiles a partir del pago de la inicial.",
     "Incluye: Garantía, instalación y capacitación (según equipo).",
-    "El monto de las cuotas puede ajustarse según la tasa BCV vigente al momento del pago.",
+    
   ];
 
   for (var i = 0; i < lines.length; i++) {
