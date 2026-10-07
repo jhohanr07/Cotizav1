@@ -116,20 +116,39 @@ export async function fetchEquipos(): Promise<Equipo[]> {
 export async function fetchCategorias(): Promise<CategoriaFinanciamiento[]> {
   const baseUrl = getAppsScriptUrl();
 
-  const response = await fetch(`${baseUrl}?action=getCategorias`, {
-    method: "GET",
-  });
-
-  if (!response.ok) {
-    throw new Error("No se pudo consultar las categorías.");
+  let response: Response;
+  try {
+    response = await fetch(`${baseUrl}?action=getCategorias`, {
+      method: "GET",
+      cache: "no-store",
+    });
+  } catch {
+    throw new Error(
+      "No se pudo conectar con el Apps Script al consultar las categorías (revise la URL y el acceso de la implementación)."
+    );
   }
 
-  const data = (await response.json()) as ApiResponse<{
-    categorias: CategoriaFinanciamiento[];
-  }>;
+  if (!response.ok) {
+    throw new Error(
+      `No se pudo consultar las categorías (HTTP ${response.status}).`
+    );
+  }
+
+  let data: ApiResponse<{ categorias: CategoriaFinanciamiento[] }>;
+  try {
+    data = (await response.json()) as ApiResponse<{
+      categorias: CategoriaFinanciamiento[];
+    }>;
+  } catch {
+    throw new Error(
+      "El Apps Script no devolvió JSON al consultar las categorías (¿implementación sin actualizar o sin acceso público?)."
+    );
+  }
 
   if (!data.success) {
-    throw new Error(data.error || "Error desconocido al consultar las categorías.");
+    throw new Error(
+      data.error || "Error desconocido al consultar las categorías."
+    );
   }
 
   return data.categorias ?? [];
