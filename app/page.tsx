@@ -589,22 +589,13 @@ function CalculadoraFinanciamientoBNH() {
     const term = categoryConfig.terms.find((t) => t.meses === safeInstallments);
     if (!term) return empty;
 
-    // (BASE - INICIAL) = MONTO FINANCIADO
-    const financedAmount = safeBase - safeInitial;
-    if (financedAmount <= 0) return empty;
-
-    // Cuota nivelada sobre el monto financiado; si el I.V.A. se financia,
-    // se reparte en las cuotas (sin interés adicional).
-    const capitalAndInterest = monthlyPaymentFor(
-      financedAmount,
-      term.tasaMensual,
-      safeInstallments
-    );
-    const ivaPerInstallment =
-      ivaFinancing === "si" ? safeVat / safeInstallments : 0;
+    // (BASE - INICIAL) + I.V.A. financiado = MONTO FINANCIADO (sobre el que se calcula el interés)
+    const financedIva = ivaFinancing === "si" ? safeVat : 0;
+    const financedAmount = safeBase - safeInitial + financedIva;
+    if (safeBase - safeInitial <= 0) return empty;
 
     const roundedMonthlyPayment = roundUpToNearest5(
-      capitalAndInterest + ivaPerInstallment
+      monthlyPaymentFor(financedAmount, term.tasaMensual, safeInstallments)
     );
 
     const totalToPay =
@@ -1016,24 +1007,6 @@ function CalculadoraFinanciamientoBNH() {
 
               <div>
                 <Label className="mb-2 block">
-                  Precio de contado
-                </Label>
-
-                <Input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={contadoPriceInput}
-                  onChange={(e) =>
-                    setContadoPriceInput(e.target.value)
-                  }
-                  placeholder="Ej. 10300"
-                  className="rounded-xl"
-                />
-              </div>
-
-              <div>
-                <Label className="mb-2 block">
                   Monto inicial
                 </Label>
 
@@ -1292,22 +1265,12 @@ function CalculadoraFinanciamientoBNH() {
                   />
 
                   <Item
-                    label={
-                      usaAjuste
-                        ? "I.V.A. "
-                        : "I.V.A. "
-                    }
+                    label="I.V.A."
                     value={formatCurrency(contadoIva)}
                   />
                 </div>
 
-                <TotalBox
-                  title="Total a pagar"
-                  base={contadoMonto}
-                  iva={contadoIva}
-                  total={contadoTotal}
-                  ajustado={usaAjuste}
-                />
+                <TotalBox title="Total a pagar" total={contadoTotal} />
               </div>
 
               {/* ===== CRÉDITO ===== */}
@@ -1364,13 +1327,7 @@ function CalculadoraFinanciamientoBNH() {
                   />
                 </div>
 
-                <TotalBox
-                  title="Total a pagar"
-                  base={safeBaseForRules}
-                  iva={creditoIva}
-                  total={creditoTotal}
-                  ajustado={usaAjuste}
-                />
+                <TotalBox title="Total a pagar" total={creditoTotal} />
               </div>
 
               <Button
@@ -1444,29 +1401,17 @@ function Item({
 
 function TotalBox({
   title,
-  base,
-  iva,
   total,
-  ajustado,
 }: {
   title: string;
-  base: number;
-  iva: number;
   total: number;
-  ajustado: boolean;
 }) {
   return (
     <div className="mt-4 rounded-2xl border border-[#0d6f91]/30 bg-[#0d6f91]/10 p-4">
-      <p className="text-sm font-medium text-[#0d6f91]">
-        {title} (base + I.V.A.{ajustado ? " " : ""})
-      </p>
+      <p className="text-sm font-medium text-[#0d6f91]">{title}</p>
 
       <p className="mt-1 text-3xl font-extrabold tracking-tight text-gray-900">
         {formatCurrency(total)}
-      </p>
-
-      <p className="mt-1 text-xs text-gray-600">
-        {formatCurrency(base)} + {formatCurrency(iva)}
       </p>
     </div>
   );
