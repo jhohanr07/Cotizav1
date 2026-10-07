@@ -552,7 +552,7 @@ function ensureFunnelHeaders_(sheet) {
   }
 }
 
-/** Busca en la hoja "VENDEDORES" el correo asociado a un nombre (sin distinguir mayúsculas/acentos). */
+/** Busca en la hoja "VENDEDORES" el correo asociado a un nombre (sin distinguir mayúsculas/acentos/espacios dobles). */
 function findVendedorEmail_(nombreVendedor) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName(SHEET_VENDEDORES);
@@ -561,22 +561,22 @@ function findVendedorEmail_(nombreVendedor) {
   var values = sheet.getDataRange().getValues();
   if (values.length < 2) return "";
 
-  var headers = values[0].map(function (h) {
-    return String(h).trim().toLowerCase();
-  });
+  var headers = values[0].map(normalizeName_);
   var idxNombre = headers.indexOf("nombre");
   var idxEmail = headers.indexOf("email");
+  if (idxEmail === -1) idxEmail = headers.indexOf("e-mail");
+  if (idxEmail === -1) idxEmail = headers.indexOf("correo");
   if (idxNombre === -1 || idxEmail === -1) return "";
 
-  var target = normalizeName_(nombreVendedor);
+  var clean = function (s) { return normalizeName_(s).replace(/\s+/g, " "); };
+  var target = clean(nombreVendedor);
 
   for (var i = 1; i < values.length; i++) {
-    var rowName = normalizeName_(values[i][idxNombre]);
-    if (rowName === target) {
-      return String(values[i][idxEmail] || "");
+    if (clean(values[i][idxNombre]) === target) {
+      var mail = String(values[i][idxEmail] || "").replace(/\s+/g, "");
+      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail) ? mail : "";
     }
   }
-
   return "";
 }
 
