@@ -25,6 +25,7 @@ import {
   type PlazoCategoria,
   type ReglaInicial,
 } from "@/lib/apps-script-api";
+import { evaluateInitialFormula } from "@/lib/initial-formula";
 
 // Las categorías, la inicial mínima/sugerida y las tasas por plazo salen de la
 // hoja "CATEGORIA" del Google Sheet. Solo estos valores no están en la hoja:
@@ -36,8 +37,7 @@ const ACCESS_PASSWORD = "BNH2026";
 // Categorías (nombre normalizado) que no permiten pagar el I.V.A. por separado
 const CATEGORIES_WITHOUT_SEPARATE_VAT = ["teair"];
 
-// Inicial mínima absoluta (USD) y paso de redondeo cuando la hoja no define uno
-const MIN_INITIAL_AMOUNT = 3500;
+// Paso de redondeo de la inicial solo cuando la hoja no trae una fórmula utilizable
 const INITIAL_STEP = 500;
 
 // El precio incluye 3 %; el I.V.A. = (precio / 1,03) x 16 % (contado y crédito)
@@ -47,8 +47,10 @@ type CategoryConfig = {
   nombre: string;
   minInitialRate: number;
   minDigits: number | null;
+  minFormula: string | null;
   suggestedInitialRate: number;
   suggestedDigits: number | null;
+  suggestedFormula: string | null;
   terms: PlazoCategoria[];
   canPayVATSeparately: boolean;
 };
@@ -102,6 +104,7 @@ function toRule(rule: ReglaInicial | null, fallbackRate: number) {
   return {
     rate: rule?.pct ?? fallbackRate,
     digits: rule?.digitos ?? null,
+    formula: rule?.formula ?? null,
   };
 }
 
@@ -358,8 +361,10 @@ function CalculadoraFinanciamientoBNH() {
       nombre: found.nombre,
       minInitialRate: min.rate,
       minDigits: min.digits,
+      minFormula: min.formula,
       suggestedInitialRate: suggested.rate,
       suggestedDigits: suggested.digits,
+      suggestedFormula: suggested.formula,
       terms: found.plazos,
       canPayVATSeparately: !CATEGORIES_WITHOUT_SEPARATE_VAT.includes(
         normalizeText(found.nombre)
@@ -375,25 +380,31 @@ function CalculadoraFinanciamientoBNH() {
   const safeBaseForRules =
     Number.isFinite(numericBase) && numericBase > 0 ? numericBase : 0;
 
-  // Inicial mínima y sugerida: porcentaje y redondeo vienen de la hoja CATEGORIA
+  // Inicial mínima y sugerida: se calculan con la fórmula de la hoja CATEGORIA tal cual
+  // (ej. REDONDEAR.MAS(( Precio/1,03)* 0.25; -2)). Si la celda no trae una fórmula
+  // interpretable se usa el porcentaje detectado.
   const minInitialAmount = useMemo(() => {
-    if (!categoryConfig) return MIN_INITIAL_AMOUNT;
-    const raw = safeBaseForRules * categoryConfig.minInitialRate;
-    const value =
-      categoryConfig.minDigits === null
-        ? raw
-        : roundUpByRule(raw, categoryConfig.minDigits);
-    return Math.max(value, MIN_INITIAL_AMOUNT);
+    if (!categoryConfig || safeBaseForRules <= 0) return 0;
+    return (
+      evaluateInitialFormula(categoryConfig.minFormula, safeBaseForRules) ??
+      roundUpByRule(
+        safeBaseForRules * categoryConfig.minInitialRate,
+        categoryConfig.minDigits
+      )
+    );
   }, [categoryConfig, safeBaseForRules]);
 
   const suggestedInitialAmount = useMemo(() => {
-    if (!categoryConfig) return MIN_INITIAL_AMOUNT;
-    return Math.max(
+    if (!categoryConfig || safeBaseForRules <= 0) return 0;
+    return (
+      evaluateInitialFormula(
+        categoryConfig.suggestedFormula,
+        safeBaseForRules
+      ) ??
       roundUpByRule(
         safeBaseForRules * categoryConfig.suggestedInitialRate,
         categoryConfig.suggestedDigits
-      ),
-      MIN_INITIAL_AMOUNT
+      )
     );
   }, [categoryConfig, safeBaseForRules]);
 
@@ -494,25 +505,13 @@ function CalculadoraFinanciamientoBNH() {
     }
 
     if (
-      initialAmount !== "" &&
-      Number.isFinite(numericInitial) &&
-      numericInitial < MIN_INITIAL_AMOUNT
-    ) {
-      errors.push(
-        `No válido: la inicial no puede ser menor a ${formatCurrency(
-          MIN_INITIAL_AMOUNT
-        )}. Por favor cambie el monto de la inicial.`
-      );
-    } else if (
       Number.isFinite(numericBase) &&
       numericBase > 0 &&
       Number.isFinite(numericInitial) &&
       numericInitial < minInitialAmount
     ) {
       errors.push(
-        `No válido: la inicial debe ser al menos ${Math.round(
-          categoryConfig.minInitialRate * 100
-        )}% de la base imponible (${formatCurrency(
+        `No válido: la inicial no puede ser menor a la inicial mínima (${formatCurrency(
           minInitialAmount
         )}). Por favor cambie el monto.`
       );
@@ -623,7 +622,6 @@ function CalculadoraFinanciamientoBNH() {
     categoryConfig.terms.some((t) => t.meses === numericInstallments) &&
     validations.length === 0 &&
     Number.isInteger(numericInitial) &&
-    numericInitial >= MIN_INITIAL_AMOUNT &&
     calculations.roundedMonthlyPayment > 0;
 
   const handleReset = () => {
@@ -1008,8 +1006,8 @@ function CalculadoraFinanciamientoBNH() {
 
                 <Input
                   type="number"
-                  min={MIN_INITIAL_AMOUNT}
-                  step={INITIAL_STEP}
+                  min={minInitialAmount || 0}
+                  step={100}
                   value={initialAmount}
                   onChange={(e) =>
                     setInitialAmount(
@@ -1313,7 +1311,7 @@ function CalculadoraFinanciamientoBNH() {
                   />
 
                   <Item
-                    label="I.V.A. a pagar"
+                    label="I.V.A. a pagar en Bs"
                     value={formatCurrency(calculations.ivaToPayField)}
                   />
 
