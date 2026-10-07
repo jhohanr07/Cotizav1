@@ -20,9 +20,13 @@ export type Equipo = {
 
 export type PlazoCategoria = {
   meses: number;
-  // Factor total del plazo (ej. 1.30). Tasa mensual = factor^(1/meses) - 1
-  factor: number;
-  tasaMensual: number;
+  // Fórmula de la cuota tal cual está en la hoja, ej.
+  // "CEILING(((Precio / 1.03) - Inicial) *1.20 / Cuotas, 10)". null = formato anterior (tasa).
+  formula: string | null;
+  // Multiplicador del plazo (ej. 1.20); respaldo si la fórmula no se puede evaluar
+  factor: number | null;
+  // Solo formato anterior "=(1.30 ^ (1 / 18))": factor^(1/meses) - 1. null con la fórmula nueva.
+  tasaMensual: number | null;
 };
 
 export type ReglaInicial = {
