@@ -40,7 +40,7 @@ const CATEGORIES_WITHOUT_SEPARATE_VAT = ["teair"];
 const MIN_INITIAL_AMOUNT = 3500;
 const INITIAL_STEP = 500;
 
-// Precio de contado: el monto incluye 3 %; el I.V.A. = (monto / 1,03) x 16 %
+// El precio incluye 3 %; el I.V.A. = (precio / 1,03) x 16 % (contado y crédito)
 const CONTADO_DIVISOR = 1.03;
 
 type CategoryConfig = {
@@ -406,8 +406,8 @@ function CalculadoraFinanciamientoBNH() {
     );
   }, [categoryConfig, safeBaseForRules]);
 
-  // I.V.A. estándar del crédito (16 % de la base); es el que entra al cálculo de la cuota
-  const vatAmount = safeBaseForRules * VAT_RATE;
+  // I.V.A. del crédito: (precio / 1,03) x 16 %
+  const vatAmount = (safeBaseForRules / CONTADO_DIVISOR) * VAT_RATE;
 
   // --- Contado: I.V.A. = (monto / 1,03) x 16 % ---
   const contadoMonto =
@@ -571,7 +571,7 @@ function CalculadoraFinanciamientoBNH() {
         ? numericInstallments
         : 0;
 
-    const safeVat = safeBase > 0 ? vatAmount : 0;
+    const safeVat = safeBase > 0 ? creditoIva : 0;
     const ivaSeparate = ivaFinancing === "no" ? safeVat : 0;
 
     const empty = {
@@ -611,7 +611,7 @@ function CalculadoraFinanciamientoBNH() {
     safeBaseForRules,
     numericInitial,
     numericInstallments,
-    vatAmount,
+    creditoIva,
     ivaFinancing,
     categoryConfig,
   ]);
@@ -1317,8 +1317,8 @@ function CalculadoraFinanciamientoBNH() {
                   />
 
                   <Item
-                    label="I.V.A."
-                    value={formatCurrency(contadoIva)}
+                    label="I.V.A. a pagar en Bs"
+                    value={formatCurrency(calculations.ivaToPayField)}
                   />
 
                   <Item
@@ -1327,7 +1327,10 @@ function CalculadoraFinanciamientoBNH() {
                   />
                 </div>
 
-                <TotalBox title="Total a pagar" total={creditoTotal} />
+                <TotalBox
+                  title="Total crédito a pagar"
+                  total={calculations.totalToPay}
+                />
               </div>
 
               <Button
