@@ -1317,8 +1317,8 @@ function CalculadoraFinanciamientoBNH() {
                   />
 
                   <Item
-                    label="I.V.A. a pagar en Bs"
-                    value={formatCurrency(calculations.ivaToPayField)}
+                    label="I.V.A."
+                    value={formatCurrency(contadoIva)}
                   />
 
                   <Item
