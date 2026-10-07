@@ -434,6 +434,17 @@ function CalculadoraFinanciamientoBNH() {
     safeBaseForRules > 0 ? (usaAjuste ? ivaAjustadoLista : vatAmount) : 0;
   const creditoTotal = safeBaseForRules + creditoIva;
 
+  // I.V.A. que se usa en el cálculo del crédito (independiente del interruptor "Ajustar"):
+  // el I.V.A. ajustado de la lista (columna G) si existe; si no, el I.V.A. normal.
+  //  - Financiamiento del I.V.A. = Sí  -> se suma al monto financiado (y "I.V.A. a pagar en Bs" = 0)
+  //  - Financiamiento del I.V.A. = No  -> se paga aparte: "I.V.A. a pagar en Bs" = I.V.A. ajustado
+  const ivaCredito =
+    safeBaseForRules > 0
+      ? ivaAjustadoDisponible
+        ? ivaAjustadoLista
+        : vatAmount
+      : 0;
+
   const contadoIva =
     contadoMonto > 0 ? (usaAjuste ? ivaAjustadoLista : contadoIvaNormal) : 0;
   const contadoTotal = contadoMonto + contadoIva;
@@ -569,8 +580,10 @@ function CalculadoraFinanciamientoBNH() {
         ? numericInstallments
         : 0;
 
-    const safeVat = safeBase > 0 ? creditoIva : 0;
-    const ivaSeparate = ivaFinancing === "no" ? safeVat : 0;
+    // I.V.A. financiado (Sí): se suma al monto financiado y "I.V.A. a pagar en Bs" queda en 0.
+    // I.V.A. no financiado (No): se paga aparte y trae el I.V.A. ajustado.
+    const ivaFinanced = ivaFinancing === "si" ? ivaCredito : 0;
+    const ivaSeparate = ivaFinancing === "no" ? ivaCredito : 0;
 
     const empty = {
       roundedMonthlyPayment: 0,
@@ -589,14 +602,18 @@ function CalculadoraFinanciamientoBNH() {
     // Base neta del crédito: Precio / 1,03 (igual que en la fórmula de la hoja)
     const netBase = safeBase / CONTADO_DIVISOR;
 
-    let financedAmount = netBase - safeInitial;
-    if (financedAmount <= 0) return empty;
+    if (netBase - safeInitial <= 0) return empty;
+
+    // Monto financiado = base neta - inicial + I.V.A. (solo si el I.V.A. se financia)
+    let financedAmount = netBase - safeInitial + ivaFinanced;
 
     // Cuota: se evalúa la fórmula de la hoja CATEGORIA tal cual, por ejemplo
-    // CEILING(((Precio / 1.03) - Inicial) *1.20 / Cuotas, 10)
+    // CEILING(((Precio / 1.03) - Inicial) *1.20 / Cuotas, 10).
+    // Para que incluya el I.V.A. financiado se usa una "inicial efectiva" reducida
+    // en ese I.V.A.: (netBase - (inicial - iva)) = netBase - inicial + iva
     let roundedMonthlyPayment = evaluateInstallmentFormula(term.formula, {
       precio: safeBase,
-      inicial: safeInitial,
+      inicial: safeInitial - ivaFinanced,
       cuotas: safeInstallments,
     });
 
@@ -610,9 +627,7 @@ function CalculadoraFinanciamientoBNH() {
 
     // Formato anterior de la hoja (tasa mensual): cuota nivelada PMT
     if (roundedMonthlyPayment === null && term.tasaMensual !== null) {
-      const financedIva = ivaFinancing === "si" ? safeVat : 0;
-      financedAmount = safeBase - safeInitial + financedIva;
-      if (safeBase - safeInitial <= 0) return empty;
+      financedAmount = safeBase - safeInitial + ivaFinanced;
       roundedMonthlyPayment = roundUpToNearest5(
         monthlyPaymentFor(financedAmount, term.tasaMensual, safeInstallments)
       );
@@ -633,7 +648,7 @@ function CalculadoraFinanciamientoBNH() {
     safeBaseForRules,
     numericInitial,
     numericInstallments,
-    creditoIva,
+    ivaCredito,
     ivaFinancing,
     categoryConfig,
   ]);
