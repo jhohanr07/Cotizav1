@@ -17,15 +17,22 @@
  *       equipo no tiene ajuste y se usa el I.V.A. normal.
  *
  *  1b) "CATEGORIA"  (condiciones de financiamiento por categoría)
- *     Encabezados fila 1: Categoria | Inicial minima | Inicial sugerida | 12 | 15 | 18
+ *     Encabezados fila 1: Categoria | Inicial minima | Inicial sugerida |
+ *                         12 Cuotas | 15 Cuotas | 18 Cuotas
+ *     (los encabezados de plazo se reconocen por el número: "12", "12 Cuotas",
+ *     "12 meses", "Cuotas 12", "Plazo 12"...)
  *     - Columna A alimenta el desplegable de categoría (valores únicos).
  *     - Inicial minima / sugerida: texto tipo "REDONDEAR.MAS(( Precio/1,03)* 0.25; -2)"
  *       (se lee el porcentaje que multiplica a "Precio" y, si existe, el
  *       redondeo) o directamente un número (0.20 / 20%).
- *     - Columnas 12 / 15 / 18 (plazos en meses): texto tipo
- *       "=(1.30 ^ (1 / 18))" (factor 1.30 a lo largo del plazo; la tasa
- *       mensual es 1.30^(1/18) - 1). "Sin calculo" o vacío = plazo no
- *       disponible para esa categoría.
+ *     - Columnas "12 Cuotas" / "15 Cuotas" / "18 Cuotas" (plazos en meses): texto con
+ *       la fórmula de la cuota mensual, ej.
+ *       "CEILING(((Precio / 1.03) - Inicial) *1.20 / Cuotas, 10)"
+ *       (Precio = precio de crédito, Inicial = monto inicial, Cuotas = plazo;
+ *       el multiplicador 1.20 es el recargo del plazo y 10 el múltiplo de
+ *       redondeo hacia arriba). El front evalúa la fórmula tal cual.
+ *       "Sin calculo" o vacío = plazo no disponible para esa categoría.
+ *       (Se sigue aceptando el formato anterior "=(1.30 ^ (1 / 18))").
  *
  *  2) "FUNEL DE VENTA"  (registro de cotizaciones generadas)
  *     Se crea automáticamente con encabezados la primera vez que se
@@ -217,12 +224,23 @@ function getCategorias_() {
   var idxMin = norm.indexOf("inicial minima");
   var idxSug = norm.indexOf("inicial sugerida");
 
-  // Columnas de plazo: cualquier encabezado que contenga un número (12, 15, 18, "12 meses")
+  // Columnas de plazo: cualquier encabezado con un número de meses/cuotas
+  // ("12", "12 Cuotas", "15 cuotas", "18 meses", "Cuotas 18", "Plazo 18").
   var termCols = [];
+  var usados = {};
   for (var c = 0; c < headers.length; c++) {
     if (c === idxCat || c === idxMin || c === idxSug) continue;
-    var m = headers[c].match(/^(\d+)/);
-    if (m) termCols.push({ col: c, meses: Number(m[1]) });
+    var meses = parseTermHeader_(norm[c]);
+    if (meses === null || usados[meses]) continue;
+    usados[meses] = true;
+    termCols.push({ col: c, meses: meses });
+  }
+
+  if (termCols.length === 0) {
+    throw new Error(
+      'La hoja "' + SHEET_CATEGORIA + '" no tiene columnas de plazo reconocibles ' +
+      '(ej. "12 Cuotas", "15 Cuotas", "18 Cuotas"). Encabezados leídos: ' + headers.join(" | ")
+    );
   }
 
   var byKey = {};
@@ -255,7 +273,14 @@ function getCategorias_() {
       if (yaExiste) continue;
 
       var rate = parseTermRate_(row[termCols[t].col], meses);
-      if (rate) cat.plazos.push({ meses: meses, factor: rate.factor, tasaMensual: rate.tasaMensual });
+      if (rate) {
+        cat.plazos.push({
+          meses: meses,
+          formula: rate.formula,
+          factor: rate.factor,
+          tasaMensual: rate.tasaMensual,
+        });
+      }
     }
   }
 
@@ -264,6 +289,23 @@ function getCategorias_() {
     cat.plazos.sort(function (a, b) { return a.meses - b.meses; });
     return cat;
   });
+}
+
+/**
+ * Número de meses a partir del encabezado (ya normalizado) de una columna de plazo.
+ * Acepta "12", "12 cuotas", "12 meses", "cuotas 12", "plazo 12", "12m".
+ * Devuelve null si el encabezado no es de plazo.
+ */
+function parseTermHeader_(normHeader) {
+  var h = String(normHeader || "").trim();
+  if (!h) return null;
+
+  var m = h.match(/^(\d{1,3})\s*(?:cuotas?|meses|mes|m|plazo)?$/) ||
+          h.match(/^(?:cuotas?|meses|mes|plazo)\s*(?:de\s*)?(\d{1,3})$/);
+  if (!m) return null;
+
+  var n = Number(m[1]);
+  return n > 0 ? n : null;
 }
 
 /**
@@ -307,9 +349,27 @@ function parseInitialRule_(cell) {
   };
 }
 
-/** "=(1.30 ^ (1 / 18))" -> { factor: 1.30, tasaMensual: 1.30^(1/18) - 1 }. "Sin calculo"/vacío -> null */
+/**
+ * Interpreta la celda de un plazo. Devuelve { formula, factor, tasaMensual } o null si
+ * el plazo no está disponible ("Sin calculo" / vacío / no interpretable).
+ *
+ *  - Fórmula de cuota (formato actual):
+ *      "CEILING(((Precio / 1.03) - Inicial) *1.20 / Cuotas, 10)"
+ *    -> { formula: <texto tal cual>, factor: 1.20, tasaMensual: null }
+ *    (el front evalúa la fórmula; "factor" es solo respaldo y etiqueta).
+ *  - Formato anterior: "=(1.30 ^ (1 / 18))" -> { formula: null, factor: 1.30, tasaMensual: 1.30^(1/18) - 1 }
+ */
 function parseTermRate_(cell, meses) {
   if (cell === "" || cell === null || cell === undefined) return null;
+
+  if (typeof cell !== "number") {
+    var raw = String(cell).trim();
+    if (!raw || /sin\s*c[aá]lculo/i.test(raw)) return null;
+
+    if (/^=?\s*(ceiling|techo|multiplo\.superior)\s*\(/i.test(raw)) {
+      return { formula: raw.replace(/^=\s*/, ""), factor: extractMultiplier_(raw), tasaMensual: null };
+    }
+  }
 
   var factor = null;
 
@@ -318,7 +378,6 @@ function parseTermRate_(cell, meses) {
     else if (cell > 1 && cell < 3) factor = cell;      // 1.30
   } else {
     var text = String(cell);
-    if (/sin\s*c[aá]lculo/i.test(text)) return null;
 
     var m = text.match(/\(\s*(\d+(?:[.,]\d+)?)\s*\^/);
     if (m) {
@@ -333,7 +392,18 @@ function parseTermRate_(cell, meses) {
   }
 
   if (!factor || !isFinite(factor) || factor <= 1 || factor >= 3) return null;
-  return { factor: factor, tasaMensual: Math.pow(factor, 1 / meses) - 1 };
+  return { formula: null, factor: factor, tasaMensual: Math.pow(factor, 1 / meses) - 1 };
+}
+
+/** Primer multiplicador entre 1 y 3 que sigue a un "*" en la fórmula (ej. "*1.20" -> 1.2). */
+function extractMultiplier_(text) {
+  var re = /\*\s*(\d+(?:[.,]\d+)?)/g;
+  var m;
+  while ((m = re.exec(text)) !== null) {
+    var v = parseFloat(m[1].replace(",", "."));
+    if (isFinite(v) && v > 1 && v < 3) return v;
+  }
+  return null;
 }
 
 /** Número desde una celda (acepta números y textos como "$12.855,00"). */
