@@ -1291,7 +1291,7 @@ function CalculadoraFinanciamientoBNH() {
               {/* ===== CONTADO ===== */}
               <div className="mb-6 rounded-3xl border border-gray-200 bg-gray-50 p-5">
                 <h3 className="mb-4 text-xl font-bold text-gray-900">
-                  Contado
+                  Precio de Contado
                 </h3>
 
                 <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
@@ -1312,7 +1312,7 @@ function CalculadoraFinanciamientoBNH() {
               {/* ===== CRÉDITO ===== */}
               <div className="rounded-3xl border border-gray-200 bg-gray-50 p-5">
                 <h3 className="mb-4 text-xl font-bold text-gray-900">
-                  Crédito
+                  Pago a Crédito
                 </h3>
 
                 <div className="mb-4 rounded-3xl bg-[#0b0b0b] p-8 text-white shadow-lg">
