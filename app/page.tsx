@@ -25,9 +25,12 @@ import {
   type PlazoCategoria,
   type ReglaInicial,
 } from "@/lib/apps-script-api";
-import { evaluateInitialFormula } from "@/lib/initial-formula";
+import {
+  evaluateInitialFormula,
+  evaluateInstallmentFormula,
+} from "@/lib/initial-formula";
 
-// Las categorías, la inicial mínima/sugerida y las tasas por plazo salen de la
+// Las categorías, la inicial mínima/sugerida y la fórmula de cuota por plazo salen de la
 // hoja "CATEGORIA" del Google Sheet. Solo estos valores no están en la hoja:
 const VAT_RATE = 0.16;
 const MIN_INITIAL_RATE_DEFAULT = 0.2;
@@ -580,18 +583,42 @@ function CalculadoraFinanciamientoBNH() {
       return empty;
     }
 
-    // Tasa mensual del plazo, tomada de la hoja CATEGORIA: factor^(1/meses) - 1
     const term = categoryConfig.terms.find((t) => t.meses === safeInstallments);
     if (!term) return empty;
 
-    // (BASE - INICIAL) + I.V.A. financiado = MONTO FINANCIADO (sobre el que se calcula el interés)
-    const financedIva = ivaFinancing === "si" ? safeVat : 0;
-    const financedAmount = safeBase - safeInitial + financedIva;
-    if (safeBase - safeInitial <= 0) return empty;
+    // Base neta del crédito: Precio / 1,03 (igual que en la fórmula de la hoja)
+    const netBase = safeBase / CONTADO_DIVISOR;
 
-    const roundedMonthlyPayment = roundUpToNearest5(
-      monthlyPaymentFor(financedAmount, term.tasaMensual, safeInstallments)
-    );
+    let financedAmount = netBase - safeInitial;
+    if (financedAmount <= 0) return empty;
+
+    // Cuota: se evalúa la fórmula de la hoja CATEGORIA tal cual, por ejemplo
+    // CEILING(((Precio / 1.03) - Inicial) *1.20 / Cuotas, 10)
+    let roundedMonthlyPayment = evaluateInstallmentFormula(term.formula, {
+      precio: safeBase,
+      inicial: safeInitial,
+      cuotas: safeInstallments,
+    });
+
+    // Respaldo: fórmula no interpretable pero con multiplicador detectado
+    if (roundedMonthlyPayment === null && term.tasaMensual === null && term.factor) {
+      roundedMonthlyPayment = roundUpToMultiple(
+        (financedAmount * term.factor) / safeInstallments,
+        10
+      );
+    }
+
+    // Formato anterior de la hoja (tasa mensual): cuota nivelada PMT
+    if (roundedMonthlyPayment === null && term.tasaMensual !== null) {
+      const financedIva = ivaFinancing === "si" ? safeVat : 0;
+      financedAmount = safeBase - safeInitial + financedIva;
+      if (safeBase - safeInitial <= 0) return empty;
+      roundedMonthlyPayment = roundUpToNearest5(
+        monthlyPaymentFor(financedAmount, term.tasaMensual, safeInstallments)
+      );
+    }
+
+    if (roundedMonthlyPayment === null) return empty;
 
     const totalToPay =
       safeInitial + ivaSeparate + roundedMonthlyPayment * safeInstallments;
