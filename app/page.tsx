@@ -325,8 +325,10 @@ function CalculadoraFinanciamientoBNH() {
 
   // Al elegir el equipo se llenan de inmediato la categoría y los precios
   // (crédito y contado) según la hoja PRECIO EQUIPOS.
+  // La categoría NO es editable: solo se define desde el equipo.
   const handleEquipoChange = (equipoId: string) => {
     setSelectedEquipoId(equipoId);
+    setEquiposError("");
 
     const equipo = equipos.find((e) => e.id === equipoId);
     if (!equipo) return;
@@ -334,7 +336,15 @@ function CalculadoraFinanciamientoBNH() {
     const matched = categorias.find(
       (c) => normalizeText(c.nombre) === normalizeText(equipo.categoria)
     );
-    if (matched) setCategory(matched.nombre);
+
+    if (matched) {
+      setCategory(matched.nombre);
+    } else {
+      setCategory("");
+      setEquiposError(
+        `La categoría "${equipo.categoria}" del equipo no existe en la hoja CATEGORIA.`
+      );
+    }
 
     setBasePrice(formatNumberInput(equipo.precioCredito));
     setContadoPriceInput(formatNumberInput(equipo.precioContado));
@@ -675,6 +685,7 @@ function CalculadoraFinanciamientoBNH() {
     setInstallments("");
     setAjustarIva(false);
     setSelectedEquipoId("");
+    setEquiposError("");
     setSendQuoteError("");
     setSendQuoteSuccess("");
   };
@@ -926,7 +937,7 @@ function CalculadoraFinanciamientoBNH() {
                       placeholder={
                         equiposLoading
                           ? "Cargando equipos..."
-                          : "Seleccione un equipo (opcional)"
+                          : "Seleccione un equipo"
                       }
                     />
                   </SelectTrigger>
@@ -965,7 +976,8 @@ function CalculadoraFinanciamientoBNH() {
                   <p className="mt-2 text-xs text-gray-500">
                     Al seleccionar un equipo se completan
                     automáticamente la categoría y los precios de
-                    crédito y de contado; puede ajustarlos manualmente.
+                    crédito y de contado; puede ajustar los precios
+                    manualmente.
                   </p>
                 )}
               </div>
@@ -975,13 +987,14 @@ function CalculadoraFinanciamientoBNH() {
                   Categoría
                 </Label>
 
+                {/* Solo lectura: la categoría se define al elegir el equipo */}
                 <Select
                   value={category}
-                  onValueChange={setCategory}
-                  disabled={categoriasLoading || categorias.length === 0}
+                  onValueChange={() => {}}
+                  disabled
                 >
                   <SelectTrigger
-                    className="rounded-xl"
+                    className="rounded-xl bg-gray-100 disabled:cursor-default disabled:opacity-100"
                     style={{
                       fontFamily: "Verdana, sans-serif",
                     }}
@@ -990,7 +1003,7 @@ function CalculadoraFinanciamientoBNH() {
                       placeholder={
                         categoriasLoading
                           ? "Cargando categorías..."
-                          : "Seleccione una categoría"
+                          : "Se completa al elegir el equipo"
                       }
                     />
                   </SelectTrigger>
@@ -1079,7 +1092,7 @@ function CalculadoraFinanciamientoBNH() {
                   </div>
                 ) : (
                   <p className="mt-2 text-xs text-gray-500">
-                    Seleccione una categoría para ver la inicial mínima y sugerida
+                    Seleccione un equipo para ver la inicial mínima y sugerida
                   </p>
                 )}
               </div>
@@ -1195,7 +1208,7 @@ function CalculadoraFinanciamientoBNH() {
                     ? `Plazos disponibles: ${categoryConfig.terms
                         .map((t) => t.meses)
                         .join(", ")} cuotas`
-                    : "Seleccione una categoría para ver los plazos disponibles"}
+                    : "Seleccione un equipo para ver los plazos disponibles"}
                 </p>
               </div>
 
