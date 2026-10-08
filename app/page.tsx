@@ -46,6 +46,38 @@ const INITIAL_STEP = 500;
 // El precio incluye 3 %; el I.V.A. = (precio / 1,03) x 16 % (contado y crédito)
 const CONTADO_DIVISOR = 1.03;
 
+// ---------------------------------------------------------------------------
+// TIR mínima anual por categoría (método del código anterior).
+// La clave es el nombre de la categoría de la hoja CATEGORIA, en minúsculas y
+// sin espacios, guiones ni acentos (ej. "Gama Alta R9" -> "gamaaltar9").
+//
+// ⚠️ REVISAR ESTOS VALORES: la hoja no trae esta columna, así que son los del
+// código anterior asignados por parecido de nombre. Ajústalos si alguno no es correcto.
+//
+// Si una categoría NO aparece aquí, se usa la fórmula de la hoja CATEGORIA
+// (CEILING ... * factor / cuotas) como respaldo.
+// ---------------------------------------------------------------------------
+const TIR_MINIMA_ANUAL: Record<string, number> = {
+  teair: 0.4,
+  mx: 0.3,
+  mx5mc: 0.3,
+  mx5: 0.3,
+  mx5p: 0.3,
+  consona: 0.3,
+  consonan7: 0.3,
+  consonan8p: 0.3,
+  gamaalta: 0.2,
+  gamaaltar9: 0.2,
+  mx7: 0.3,
+  mx7p: 0.3,
+  mx7pl: 0.3,
+  mx7m: 0.3,
+  mx7tm: 0.25,
+};
+
+// Redondeo de la cuota calculada por TIR (igual que el código anterior)
+const TIR_PAYMENT_STEP = 5;
+
 type CategoryConfig = {
   nombre: string;
   minInitialRate: number;
@@ -56,6 +88,7 @@ type CategoryConfig = {
   suggestedFormula: string | null;
   terms: PlazoCategoria[];
   canPayVATSeparately: boolean;
+  tirAnual: number | null;
 };
 
 type PaymentMode = "si" | "no";
@@ -94,6 +127,11 @@ function normalizeText(value: string) {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
+// Clave para buscar la TIR de una categoría: sin acentos, espacios ni símbolos
+function tirKey(value: string) {
+  return normalizeText(value).replace(/[^a-z0-9]/g, "");
+}
+
 // Redondea hacia arriba igual que REDONDEAR.MAS(valor; digitos) de la hoja.
 // Sin dígitos definidos se usa el múltiplo de $500 de siempre.
 function roundUpByRule(value: number, digits: number | null) {
@@ -118,15 +156,225 @@ function monthlyPaymentFor(principal: number, monthlyRate: number, n: number) {
   return (principal * monthlyRate) / (1 - Math.pow(1 + monthlyRate, -n));
 }
 
+// ===========================================================================
+// TIR (método del código anterior)
+// ===========================================================================
+
+function calculateIRR(cashFlows: number[]): number | null {
+  if (cashFlows.length < 2) return null;
+
+  const hasPositive = cashFlows.some((v) => v > 0);
+  const hasNegative = cashFlows.some((v) => v < 0);
+
+  if (!hasPositive || !hasNegative) return null;
+
+  const npv = (rate: number) =>
+    cashFlows.reduce((acc, cf, i) => acc + cf / Math.pow(1 + rate, i), 0);
+
+  let low = -0.9999;
+  let high = 10;
+
+  const npvLow = npv(low);
+  let npvHigh = npv(high);
+
+  if (!Number.isFinite(npvLow) || !Number.isFinite(npvHigh)) return null;
+
+  let attempts = 0;
+
+  while (npvLow * npvHigh > 0 && attempts < 60) {
+    high *= 2;
+    npvHigh = npv(high);
+
+    if (!Number.isFinite(npvHigh)) return null;
+
+    attempts++;
+  }
+
+  if (npvLow * npvHigh > 0) return null;
+
+  let currentNpvLow = npvLow;
+
+  for (let i = 0; i < 250; i++) {
+    const mid = (low + high) / 2;
+    const npvMid = npv(mid);
+
+    if (!Number.isFinite(npvMid)) return null;
+
+    if (Math.abs(npvMid) < 1e-10) return mid;
+
+    if (currentNpvLow * npvMid < 0) {
+      high = mid;
+    } else {
+      low = mid;
+      currentNpvLow = npvMid;
+    }
+  }
+
+  return (low + high) / 2;
+}
+
+function monthlyIrrToAnnual(irr: number | null) {
+  if (irr === null || !Number.isFinite(irr)) return null;
+
+  return Math.pow(1 + irr, 12) - 1;
+}
+
+function buildCashFlows(params: {
+  commercialPrice: number;
+  initialAmount: number;
+  installments: number;
+  monthlyPayment: number;
+  ivaFinancing: PaymentMode;
+  ivaAmount: number;
+}) {
+  const {
+    commercialPrice,
+    initialAmount,
+    installments,
+    monthlyPayment,
+    ivaFinancing,
+    ivaAmount,
+  } = params;
+
+  const flow0 = -commercialPrice + initialAmount;
+
+  if (ivaFinancing === "si") {
+    return [
+      flow0,
+      ...Array.from({ length: installments }, () => monthlyPayment),
+    ];
+  }
+
+  return [
+    flow0,
+    ivaAmount,
+    ...Array.from({ length: installments }, () => monthlyPayment),
+  ];
+}
+
+function findMinimumMonthlyPayment(params: {
+  commercialPrice: number;
+  initialAmount: number;
+  installments: number;
+  targetAnnualRate: number;
+  ivaFinancing: PaymentMode;
+  ivaAmount: number;
+}) {
+  const {
+    commercialPrice,
+    initialAmount,
+    installments,
+    targetAnnualRate,
+    ivaFinancing,
+    ivaAmount,
+  } = params;
+
+  const financedAmount = commercialPrice - initialAmount;
+
+  const emptyResult = {
+    rawMonthlyPayment: 0,
+    roundedMonthlyPayment: 0,
+    monthlyIrr: null as number | null,
+    annualIrr: null as number | null,
+  };
+
+  if (
+    !Number.isFinite(financedAmount) ||
+    financedAmount <= 0 ||
+    !Number.isInteger(installments) ||
+    installments <= 0
+  ) {
+    return emptyResult;
+  }
+
+  const getAnnualIrrFromPayment = (payment: number) => {
+    const cashFlows = buildCashFlows({
+      commercialPrice,
+      initialAmount,
+      installments,
+      monthlyPayment: payment,
+      ivaFinancing,
+      ivaAmount,
+    });
+
+    const irr = calculateIRR(cashFlows);
+    const annual = monthlyIrrToAnnual(irr);
+
+    return { irr, annual };
+  };
+
+  let low = 0;
+  let high = Math.max(financedAmount * 2, 1000);
+
+  let highResult = getAnnualIrrFromPayment(high);
+
+  let attempts = 0;
+
+  while (
+    (highResult.annual === null || highResult.annual < targetAnnualRate) &&
+    attempts < 100
+  ) {
+    high *= 2;
+    highResult = getAnnualIrrFromPayment(high);
+    attempts++;
+  }
+
+  if (highResult.annual === null || highResult.annual < targetAnnualRate) {
+    return emptyResult;
+  }
+
+  for (let i = 0; i < 250; i++) {
+    const mid = (low + high) / 2;
+
+    const result = getAnnualIrrFromPayment(mid);
+
+    if (result.annual === null) {
+      low = mid;
+      continue;
+    }
+
+    if (result.annual >= targetAnnualRate) {
+      high = mid;
+    } else {
+      low = mid;
+    }
+  }
+
+  const rawMonthlyPayment = high;
+
+  let roundedMonthlyPayment = roundUpToMultiple(
+    rawMonthlyPayment,
+    TIR_PAYMENT_STEP
+  );
+
+  let finalResult = getAnnualIrrFromPayment(roundedMonthlyPayment);
+
+  let guard = 0;
+
+  while (
+    finalResult.annual !== null &&
+    finalResult.annual < targetAnnualRate &&
+    guard < 10000
+  ) {
+    roundedMonthlyPayment += TIR_PAYMENT_STEP;
+    finalResult = getAnnualIrrFromPayment(roundedMonthlyPayment);
+    guard++;
+  }
+
+  return {
+    rawMonthlyPayment,
+    roundedMonthlyPayment,
+    monthlyIrr: finalResult.irr,
+    annualIrr: finalResult.annual,
+  };
+}
+
 export default function Page() {
-  const [isAuthenticated, setIsAuthenticated] =
-    useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
 
-  const [password, setPassword] =
-    useState("");
+  const [password, setPassword] = useState("");
 
-  const [accessError, setAccessError] =
-    useState("");
+  const [accessError, setAccessError] = useState("");
 
   const handleLogin = () => {
     if (password === ACCESS_PASSWORD) {
@@ -142,8 +390,7 @@ export default function Page() {
       <div
         className="min-h-screen bg-[#f3f5f7] px-6 py-10"
         style={{
-          fontFamily:
-            "Verdana, sans-serif",
+          fontFamily: "Verdana, sans-serif",
         }}
       >
         <div className="mx-auto flex max-w-md flex-col items-center justify-center">
@@ -165,8 +412,7 @@ export default function Page() {
               </CardTitle>
 
               <p className="mt-2 text-sm text-gray-600">
-                Ingrese la clave para acceder
-                a la calculadora de
+                Ingrese la clave para acceder a la calculadora de
                 financiamiento
               </p>
             </CardHeader>
@@ -180,11 +426,7 @@ export default function Page() {
                 <Input
                   type="password"
                   value={password}
-                  onChange={(e) =>
-                    setPassword(
-                      e.target.value
-                    )
-                  }
+                  onChange={(e) => setPassword(e.target.value)}
                   placeholder="Ingrese su clave"
                   className="h-12 rounded-xl"
                 />
@@ -192,9 +434,7 @@ export default function Page() {
 
               {accessError && (
                 <Alert className="border-red-200 bg-red-50">
-                  <AlertDescription>
-                    {accessError}
-                  </AlertDescription>
+                  <AlertDescription>{accessError}</AlertDescription>
                 </Alert>
               )}
 
@@ -382,6 +622,8 @@ function CalculadoraFinanciamientoBNH() {
       canPayVATSeparately: !CATEGORIES_WITHOUT_SEPARATE_VAT.includes(
         normalizeText(found.nombre)
       ),
+      // TIR mínima anual de la categoría (null = usar la fórmula de la hoja)
+      tirAnual: TIR_MINIMA_ANUAL[tirKey(found.nombre)] ?? null,
     };
   }, [categorias, category]);
 
@@ -444,16 +686,13 @@ function CalculadoraFinanciamientoBNH() {
     safeBaseForRules > 0 ? (usaAjuste ? ivaAjustadoLista : vatAmount) : 0;
   const creditoTotal = safeBaseForRules + creditoIva;
 
-  // I.V.A. que se usa en el cálculo del crédito (independiente del interruptor "Ajustar"):
-  // el I.V.A. ajustado de la lista (columna G) si existe; si no, el I.V.A. normal.
-  //  - Financiamiento del I.V.A. = Sí  -> se suma al monto financiado (y "I.V.A. a pagar en Bs" = 0)
-  //  - Financiamiento del I.V.A. = No  -> se paga aparte: "I.V.A. a pagar en Bs" = I.V.A. ajustado
-  const ivaCredito =
-    safeBaseForRules > 0
-      ? ivaAjustadoDisponible
-        ? ivaAjustadoLista
-        : vatAmount
-      : 0;
+  // I.V.A. que se usa en el cálculo del crédito:
+  //  - Con el interruptor "Aplicar Ajuste" apagado -> I.V.A. normal: (precio / 1,03) x 16 %
+  //    (igual que la calculadora anterior, para que la cuota coincida).
+  //  - Con el interruptor encendido y un I.V.A. ajustado disponible -> I.V.A. ajustado (columna G).
+  //  Financiamiento del I.V.A. = Sí  -> se suma al monto financiado ("I.V.A. a pagar en Bs" = 0)
+  //  Financiamiento del I.V.A. = No  -> se paga aparte: "I.V.A. a pagar en Bs" = este I.V.A.
+  const ivaCredito = creditoIva;
 
   const contadoIva =
     contadoMonto > 0 ? (usaAjuste ? ivaAjustadoLista : contadoIvaNormal) : 0;
@@ -591,7 +830,7 @@ function CalculadoraFinanciamientoBNH() {
         : 0;
 
     // I.V.A. financiado (Sí): se suma al monto financiado y "I.V.A. a pagar en Bs" queda en 0.
-    // I.V.A. no financiado (No): se paga aparte y trae el I.V.A. ajustado.
+    // I.V.A. no financiado (No): se paga aparte.
     const ivaFinanced = ivaFinancing === "si" ? ivaCredito : 0;
     const ivaSeparate = ivaFinancing === "no" ? ivaCredito : 0;
 
@@ -600,6 +839,7 @@ function CalculadoraFinanciamientoBNH() {
       totalToPay: safeInitial,
       ivaToPayField: ivaSeparate,
       financedAmount: 0,
+      annualIrr: null as number | null,
     };
 
     if (!categoryConfig || safeBase <= 0 || safeInstallments <= 0) {
@@ -617,15 +857,41 @@ function CalculadoraFinanciamientoBNH() {
     // Monto financiado = base neta - inicial + I.V.A. (solo si el I.V.A. se financia)
     let financedAmount = netBase - safeInitial + ivaFinanced;
 
-    // Cuota: se evalúa la fórmula de la hoja CATEGORIA tal cual, por ejemplo
+    let roundedMonthlyPayment: number | null = null;
+    let annualIrr: number | null = null;
+
+    // --- 1) Método principal: TIR mínima anual de la categoría (como la calculadora anterior) ---
+    if (categoryConfig.tirAnual !== null) {
+      // Precio comercial del código anterior: (base + I.V.A. 16 %) + 3 % = (netBase x 1,16) x 1,03
+      const commercialPrice =
+        (netBase + netBase * VAT_RATE) * CONTADO_DIVISOR;
+
+      const search = findMinimumMonthlyPayment({
+        commercialPrice,
+        initialAmount: safeInitial,
+        installments: safeInstallments,
+        targetAnnualRate: categoryConfig.tirAnual,
+        ivaFinancing,
+        ivaAmount: ivaCredito,
+      });
+
+      if (search.roundedMonthlyPayment > 0) {
+        roundedMonthlyPayment = search.roundedMonthlyPayment;
+        annualIrr = search.annualIrr;
+      }
+    }
+
+    // --- 2) Respaldo: fórmula de la hoja CATEGORIA, por ejemplo
     // CEILING(((Precio / 1.03) - Inicial) *1.20 / Cuotas, 10).
     // Para que incluya el I.V.A. financiado se usa una "inicial efectiva" reducida
     // en ese I.V.A.: (netBase - (inicial - iva)) = netBase - inicial + iva
-    let roundedMonthlyPayment = evaluateInstallmentFormula(term.formula, {
-      precio: safeBase,
-      inicial: safeInitial - ivaFinanced,
-      cuotas: safeInstallments,
-    });
+    if (roundedMonthlyPayment === null) {
+      roundedMonthlyPayment = evaluateInstallmentFormula(term.formula, {
+        precio: safeBase,
+        inicial: safeInitial - ivaFinanced,
+        cuotas: safeInstallments,
+      });
+    }
 
     // Respaldo: fórmula no interpretable pero con multiplicador detectado
     if (roundedMonthlyPayment === null && term.tasaMensual === null && term.factor) {
@@ -653,6 +919,7 @@ function CalculadoraFinanciamientoBNH() {
       totalToPay,
       ivaToPayField: ivaSeparate,
       financedAmount,
+      annualIrr,
     };
   }, [
     safeBaseForRules,
@@ -756,8 +1023,7 @@ function CalculadoraFinanciamientoBNH() {
     <div
       className="min-h-screen bg-[#f3f5f7] px-4 py-6 md:px-6 md:py-8"
       style={{
-        fontFamily:
-          "Verdana, sans-serif",
+        fontFamily: "Verdana, sans-serif",
       }}
     >
       <div className="mx-auto max-w-7xl">
@@ -776,19 +1042,15 @@ function CalculadoraFinanciamientoBNH() {
 
             <div>
               <h1 className="text-3xl font-bold tracking-tight text-gray-900 md:text-4xl">
-                Calculadora de
-                Financiamiento
+                Calculadora de Financiamiento
               </h1>
 
               <p className="mt-2 text-sm text-gray-600 md:text-base">
-                Simulación comercial
-                para planes de
-                financiamiento
+                Simulación comercial para planes de financiamiento
               </p>
 
               <div className="mt-4 inline-flex rounded-full bg-[#0d6f91]/10 px-4 py-2 text-sm font-medium text-[#0d6f91]">
-                BNH Medical ·
-                Herramienta interna
+                BNH Medical · Herramienta interna
               </div>
             </div>
           </div>
@@ -804,63 +1066,46 @@ function CalculadoraFinanciamientoBNH() {
           <CardContent>
             <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
               <div>
-                <Label className="mb-2 block">
-                  Nombre del lead
-                </Label>
+                <Label className="mb-2 block">Nombre del lead</Label>
 
                 <Input
                   type="text"
                   value={leadName}
-                  onChange={(e) =>
-                    setLeadName(e.target.value)
-                  }
+                  onChange={(e) => setLeadName(e.target.value)}
                   placeholder="Ej. Dr. Juan Rodríguez"
                   className="rounded-xl"
                 />
               </div>
 
               <div>
-                <Label className="mb-2 block">
-                  Teléfono
-                </Label>
+                <Label className="mb-2 block">Teléfono</Label>
 
                 <Input
                   type="tel"
                   value={leadPhone}
-                  onChange={(e) =>
-                    setLeadPhone(e.target.value)
-                  }
+                  onChange={(e) => setLeadPhone(e.target.value)}
                   placeholder="Ej. 0414-1234567"
                   className="rounded-xl"
                 />
               </div>
 
               <div>
-                <Label className="mb-2 block">
-                  Email
-                </Label>
+                <Label className="mb-2 block">Email</Label>
 
                 <Input
                   type="email"
                   value={leadEmail}
-                  onChange={(e) =>
-                    setLeadEmail(e.target.value)
-                  }
+                  onChange={(e) => setLeadEmail(e.target.value)}
                   placeholder="Ej. doctor@clinica.com"
                   className="rounded-xl"
                 />
               </div>
 
               <div>
-                <Label className="mb-2 block">
-                  Vendedor
-                </Label>
+                <Label className="mb-2 block">Vendedor</Label>
 
                 {vendedores.length > 0 ? (
-                  <Select
-                    value={vendedorName}
-                    onValueChange={setVendedorName}
-                  >
+                  <Select value={vendedorName} onValueChange={setVendedorName}>
                     <SelectTrigger
                       className="rounded-xl"
                       style={{
@@ -892,9 +1137,7 @@ function CalculadoraFinanciamientoBNH() {
                   <Input
                     type="text"
                     value={vendedorName}
-                    onChange={(e) =>
-                      setVendedorName(e.target.value)
-                    }
+                    onChange={(e) => setVendedorName(e.target.value)}
                     placeholder={
                       vendedoresLoading
                         ? "Cargando vendedores..."
@@ -918,9 +1161,7 @@ function CalculadoraFinanciamientoBNH() {
 
             <CardContent className="space-y-5">
               <div>
-                <Label className="mb-2 block">
-                  Equipo
-                </Label>
+                <Label className="mb-2 block">Equipo</Label>
 
                 <Select
                   value={selectedEquipoId}
@@ -969,30 +1210,21 @@ function CalculadoraFinanciamientoBNH() {
                 </Select>
 
                 {equiposError ? (
-                  <p className="mt-2 text-xs text-red-600">
-                    {equiposError}
-                  </p>
+                  <p className="mt-2 text-xs text-red-600">{equiposError}</p>
                 ) : (
                   <p className="mt-2 text-xs text-gray-500">
-                    Al seleccionar un equipo se completan
-                    automáticamente la categoría y los precios de
-                    crédito y de contado; puede ajustar los precios
-                    manualmente.
+                    Al seleccionar un equipo se completan automáticamente la
+                    categoría y los precios de crédito y de contado; puede
+                    ajustar los precios manualmente.
                   </p>
                 )}
               </div>
 
               <div>
-                <Label className="mb-2 block">
-                  Categoría
-                </Label>
+                <Label className="mb-2 block">Categoría</Label>
 
                 {/* Solo lectura: la categoría se define al elegir el equipo */}
-                <Select
-                  value={category}
-                  onValueChange={() => {}}
-                  disabled
-                >
+                <Select value={category} onValueChange={() => {}} disabled>
                   <SelectTrigger
                     className="rounded-xl bg-gray-100 disabled:cursor-default disabled:opacity-100"
                     style={{
@@ -1028,47 +1260,33 @@ function CalculadoraFinanciamientoBNH() {
                 </Select>
 
                 {categoriasError && (
-                  <p className="mt-2 text-xs text-red-600">
-                    {categoriasError}
-                  </p>
+                  <p className="mt-2 text-xs text-red-600">{categoriasError}</p>
                 )}
               </div>
 
               <div>
-                <Label className="mb-2 block">
-                  Precio
-                </Label>
+                <Label className="mb-2 block">Precio</Label>
 
                 <Input
                   type="number"
                   min="0"
                   step="0.01"
                   value={basePrice}
-                  onChange={(e) =>
-                    setBasePrice(
-                      e.target.value
-                    )
-                  }
+                  onChange={(e) => setBasePrice(e.target.value)}
                   placeholder="Ej. 10000"
                   className="rounded-xl"
                 />
               </div>
 
               <div>
-                <Label className="mb-2 block">
-                  Monto inicial
-                </Label>
+                <Label className="mb-2 block">Monto inicial</Label>
 
                 <Input
                   type="number"
                   min={minInitialAmount || 0}
                   step={100}
                   value={initialAmount}
-                  onChange={(e) =>
-                    setInitialAmount(
-                      e.target.value
-                    )
-                  }
+                  onChange={(e) => setInitialAmount(e.target.value)}
                   placeholder="Ej. 5000"
                   className="rounded-xl"
                 />
@@ -1098,26 +1316,18 @@ function CalculadoraFinanciamientoBNH() {
               </div>
 
               <div>
-                <Label className="mb-2 block">
-                  Financiamiento del
-                  I.V.A.
-                </Label>
+                <Label className="mb-2 block">Financiamiento del I.V.A.</Label>
 
                 <Select
                   value={ivaFinancing}
-                  onValueChange={(
-                    value: PaymentMode
-                  ) =>
-                    setIvaFinancing(
-                      value
-                    )
+                  onValueChange={(value: PaymentMode) =>
+                    setIvaFinancing(value)
                   }
                 >
                   <SelectTrigger
                     className="rounded-xl"
                     style={{
-                      fontFamily:
-                        "Verdana, sans-serif",
+                      fontFamily: "Verdana, sans-serif",
                     }}
                   >
                     <SelectValue placeholder="Seleccione" />
@@ -1125,15 +1335,13 @@ function CalculadoraFinanciamientoBNH() {
 
                   <SelectContent
                     style={{
-                      fontFamily:
-                        "Verdana, sans-serif",
+                      fontFamily: "Verdana, sans-serif",
                     }}
                   >
                     <SelectItem
                       value="si"
                       style={{
-                        fontFamily:
-                          "Verdana, sans-serif",
+                        fontFamily: "Verdana, sans-serif",
                       }}
                     >
                       Sí
@@ -1143,8 +1351,7 @@ function CalculadoraFinanciamientoBNH() {
                       <SelectItem
                         value="no"
                         style={{
-                          fontFamily:
-                            "Verdana, sans-serif",
+                          fontFamily: "Verdana, sans-serif",
                         }}
                       >
                         No
@@ -1154,8 +1361,7 @@ function CalculadoraFinanciamientoBNH() {
                         value="no"
                         disabled
                         style={{
-                          fontFamily:
-                            "Verdana, sans-serif",
+                          fontFamily: "Verdana, sans-serif",
                         }}
                       >
                         No
@@ -1166,9 +1372,7 @@ function CalculadoraFinanciamientoBNH() {
               </div>
 
               <div>
-                <Label className="mb-2 block">
-                  Cantidad de cuotas
-                </Label>
+                <Label className="mb-2 block">Cantidad de cuotas</Label>
 
                 <Select
                   value={installments}
@@ -1212,27 +1416,13 @@ function CalculadoraFinanciamientoBNH() {
                 </p>
               </div>
 
-              {validations.length >
-                0 && (
+              {validations.length > 0 && (
                 <Alert className="border-red-200 bg-red-50">
                   <AlertDescription>
                     <div className="space-y-1">
-                      {validations.map(
-                        (
-                          message,
-                          index
-                        ) => (
-                          <div
-                            key={
-                              index
-                            }
-                          >
-                            {
-                              message
-                            }
-                          </div>
-                        )
-                      )}
+                      {validations.map((message, index) => (
+                        <div key={index}>{message}</div>
+                      ))}
                     </div>
                   </AlertDescription>
                 </Alert>
@@ -1240,9 +1430,7 @@ function CalculadoraFinanciamientoBNH() {
 
               <Button
                 variant="outline"
-                onClick={
-                  handleReset
-                }
+                onClick={handleReset}
                 className="rounded-xl border-gray-300"
               >
                 Restablecer
@@ -1264,9 +1452,7 @@ function CalculadoraFinanciamientoBNH() {
                   <p className="text-sm font-semibold text-gray-800">
                     Aplicar Ajuste
                   </p>
-                  <p className="text-xs text-gray-500">
-                    
-                  </p>
+                  <p className="text-xs text-gray-500"></p>
                 </div>
 
                 <button
@@ -1313,10 +1499,7 @@ function CalculadoraFinanciamientoBNH() {
                     value={formatCurrency(contadoMonto)}
                   />
 
-                  <Item
-                    label="I.V.A."
-                    value={formatCurrency(contadoIva)}
-                  />
+                  <Item label="I.V.A." value={formatCurrency(contadoIva)} />
                 </div>
 
                 <TotalBox title="Total a pagar" total={contadoTotal} />
@@ -1401,26 +1584,20 @@ function CalculadoraFinanciamientoBNH() {
               </Button>
 
               <p className="mt-2 text-xs text-gray-500">
-                Se generará el PDF de la cotización y se
-                enviará por correo al lead (y al vendedor, si
-                su correo está registrado en la hoja
-                &quot;VENDEDORES&quot;); quedará guardada en
-                el Funel de Venta.
+                Se generará el PDF de la cotización y se enviará por correo al
+                lead (y al vendedor, si su correo está registrado en la hoja
+                &quot;VENDEDORES&quot;); quedará guardada en el Funel de Venta.
               </p>
 
               {sendQuoteError && (
                 <Alert className="mt-4 border-red-200 bg-red-50">
-                  <AlertDescription>
-                    {sendQuoteError}
-                  </AlertDescription>
+                  <AlertDescription>{sendQuoteError}</AlertDescription>
                 </Alert>
               )}
 
               {sendQuoteSuccess && (
                 <Alert className="mt-4 border-green-200 bg-green-50">
-                  <AlertDescription>
-                    {sendQuoteSuccess}
-                  </AlertDescription>
+                  <AlertDescription>{sendQuoteSuccess}</AlertDescription>
                 </Alert>
               )}
             </CardContent>
@@ -1431,33 +1608,17 @@ function CalculadoraFinanciamientoBNH() {
   );
 }
 
-function Item({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}) {
+function Item({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-      <p className="text-gray-500">
-        {label}
-      </p>
+      <p className="text-gray-500">{label}</p>
 
-      <p className="mt-1 font-semibold text-gray-900">
-        {value}
-      </p>
+      <p className="mt-1 font-semibold text-gray-900">{value}</p>
     </div>
   );
 }
 
-function TotalBox({
-  title,
-  total,
-}: {
-  title: string;
-  total: number;
-}) {
+function TotalBox({ title, total }: { title: string; total: number }) {
   return (
     <div className="mt-4 rounded-2xl border border-[#0d6f91]/30 bg-[#0d6f91]/10 p-4">
       <p className="text-sm font-medium text-[#0d6f91]">{title}</p>
