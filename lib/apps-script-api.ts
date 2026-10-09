@@ -18,6 +18,12 @@ export type Equipo = {
   ivaAjustado: number;
 };
 
+export type PlazoAirr = {
+  meses: number;
+  // AIRR anual objetivo como fracción (0.25 = 25%)
+  tasa: number;
+};
+
 export type PlazoCategoria = {
   meses: number;
   // Fórmula de la cuota tal cual está en la hoja, ej.
@@ -42,7 +48,10 @@ export type CategoriaFinanciamiento = {
   nombre: string;
   inicialMinima: ReglaInicial | null;
   inicialSugerida: ReglaInicial | null;
-  plazos: PlazoCategoria[];
+  plazosSi: PlazoCategoria[]; // I.V.A. financiado = Sí (columnas D:F)
+  plazosNo: PlazoCategoria[]; // I.V.A. financiado = No (columnas G:I)
+  // Plazos disponibles con su AIRR (hoja CATEGORIA, columnas L:N)
+  airr?: PlazoAirr[];
 };
 
 export type QuotePayload = {
@@ -114,7 +123,7 @@ export async function fetchEquipos(): Promise<Equipo[]> {
 }
 
 /**
- * Obtiene las categorías y sus condiciones (inicial mínima/sugerida y tasas por
+ * Obtiene las categorías y sus condiciones (inicial mínima/sugerida y AIRR por
  * plazo) desde la hoja "CATEGORIA". La columna A alimenta el desplegable.
  */
 export async function fetchCategorias(): Promise<CategoriaFinanciamiento[]> {
