@@ -4,72 +4,8 @@
  * Backend en Google Apps Script, vinculado al Google Sheet que actúa
  * como base de datos de la calculadora.
  *
- * Hojas esperadas en el Spreadsheet:
+ *     PRODUCCION
  *
- *  1) "PRECIO EQUIPOS"  (catálogo de precios)
- *     Encabezados fila 1: ID | Nombre | Categoria | Credito | Contado |
- *                         Base ajustada | IVA ajustado
- *     - "Categoria" debe coincidir con un valor de la columna A de la
- *       hoja "CATEGORIA" (TeAir, MX, Consona, Gama Alta, ...).
- *     - "Credito" y "Contado" son los precios del equipo para cada tipo de venta.
- *     - "IVA ajustado" (columna G) es el I.V.A. que se usa al activar el
- *       interruptor "Ajustar" de la calculadora. Si es 0 o está vacío, el
- *       equipo no tiene ajuste y se usa el I.V.A. normal.
- *
- *  1b) "CATEGORIA"  (condiciones de financiamiento por categoría)
- *     Encabezados fila 1: Categoria | Inicial minima | Inicial sugerida |
- *                         12 Cuotas | 15 Cuotas | 18 Cuotas
- *     (los encabezados de plazo se reconocen por el número: "12", "12 Cuotas",
- *     "12 meses", "Cuotas 12", "Plazo 12"...)
- *     - Columna A alimenta el desplegable de categoría (valores únicos).
- *     - Inicial minima / sugerida: texto tipo "REDONDEAR.MAS(( Precio/1,03)* 0.25; -2)"
- *       (se lee el porcentaje que multiplica a "Precio" y, si existe, el
- *       redondeo) o directamente un número (0.20 / 20%).
- *     - Columnas "12 Cuotas" / "15 Cuotas" / "18 Cuotas" (plazos en meses): texto con
- *       la fórmula de la cuota mensual, ej.
- *       "CEILING(((Precio / 1.03) - Inicial) *1.20 / Cuotas, 10)"
- *       (Precio = precio de crédito, Inicial = monto inicial, Cuotas = plazo;
- *       el multiplicador 1.20 es el recargo del plazo y 10 el múltiplo de
- *       redondeo hacia arriba). El front evalúa la fórmula tal cual.
- *       "Sin calculo" o vacío = plazo no disponible para esa categoría.
- *       (Se sigue aceptando el formato anterior "=(1.30 ^ (1 / 18))").
- *
- *  2) "FUNEL DE VENTA"  (registro de cotizaciones generadas)
- *     Se crea automáticamente con encabezados la primera vez que se
- *     guarda una cotización.
- *
- *  3) "VENDEDORES"  (alimenta el desplegable de vendedor y la copia
- *     del correo)
- *     Encabezados fila 1: Nombre | Email
- *     Si el nombre de vendedor recibido coincide (sin distinguir
- *     mayúsculas/acentos) con una fila de esta hoja, se agrega su
- *     correo en copia (CC) al enviar la propuesta.
- *
- * Por cada cotización enviada se genera un PDF (formato "Cotización de
- * Servicios" de BNH Medical, sin RIF ni dirección del cliente) que se
- * adjunta al correo. Se arma con el servicio nativo DocumentApp/DriveApp
- * (no requiere habilitar servicios avanzados) y reproduce la
- * estructura y los colores de la plantilla original, aunque sin el
- * degradado decorativo del encabezado.
- *
- * Endpoints:
- *  - GET  ?action=getEquipos    -> { success, equipos: [...] }
- *  - GET  ?action=getCategorias -> { success, categorias: [...] }
- *  - GET  ?action=getVendedores -> { success, vendedores: [nombres] }
- *  - POST { action: "saveQuote", ... }
- *                                -> { success, numero, warning? }
- *
- * Despliegue:
- *  1. Abre el Google Sheet que usarás como base de datos.
- *  2. Extensiones > Apps Script.
- *  3. Reemplaza el contenido de Code.gs por este archivo.
- *  4. Implementar > Nueva implementación > Tipo "Aplicación web".
- *       Ejecutar como: Yo (tu cuenta, dueña del Sheet)
- *       Quién tiene acceso: Cualquier usuario
- *     (autoriza los permisos: Sheets, Gmail/MailApp, Docs y Drive; los
- *     dos últimos son nuevos porque ahora se genera el PDF).
- *  5. Copia la URL de la implementación y colócala como
- *     NEXT_PUBLIC_APPS_SCRIPT_URL en las variables de entorno del
  *     proyecto Next.js (Vercel).
  */
 
@@ -211,12 +147,18 @@ function getEquipos_() {
 function getCategorias_() {
   var sheet = getSheet_(SHEET_CATEGORIA);
   var values = sheet.getDataRange().getValues();
-
   if (values.length < 2) return [];
 
-  var headers = values[0].map(function (h) {
-    return String(h).trim();
-  });
+  // Fila de encabezados = primera fila (de las 10 primeras) que tenga una celda "Categoria".
+  var hr = -1;
+  for (var r = 0; r < Math.min(values.length, 10) && hr === -1; r++) {
+    for (var k = 0; k < values[r].length; k++) {
+      if (normalizeName_(values[r][k]) === "categoria") { hr = r; break; }
+    }
+  }
+  if (hr === -1) hr = 0;
+
+  var headers = values[hr].map(function (h) { return String(h).trim(); });
   var norm = headers.map(normalizeName_);
 
   var idxCat = norm.indexOf("categoria");
@@ -224,71 +166,119 @@ function getCategorias_() {
   var idxMin = norm.indexOf("inicial minima");
   var idxSug = norm.indexOf("inicial sugerida");
 
-  // Columnas de plazo: cualquier encabezado con un número de meses/cuotas
-  // ("12", "12 Cuotas", "15 cuotas", "18 meses", "Cuotas 18", "Plazo 18").
-  var termCols = [];
-  var usados = {};
-  for (var c = 0; c < headers.length; c++) {
-    if (c === idxCat || c === idxMin || c === idxSug) continue;
-    var meses = parseTermHeader_(norm[c]);
-    if (meses === null || usados[meses]) continue;
-    usados[meses] = true;
-    termCols.push({ col: c, meses: meses });
+   // Bloque AIRR (L:N): la palabra "AIRR" puede estar en la fila de encabezados o en la de arriba.
+  var groupRow = hr > 0 ? values[hr - 1] : [];
+  var airrCol = norm.indexOf("airr");
+  if (airrCol === -1) {
+    for (var gc = 0; gc < groupRow.length; gc++) {
+      if (normalizeName_(groupRow[gc]) === "airr") { airrCol = gc; break; }
+    }
+  }
+  // Desde AIRR en adelante son datos auxiliares, no plazos con fórmula.
+  var endCol = airrCol !== -1 ? airrCol : headers.length;
+
+  var airrCols = [];
+  if (airrCol !== -1) {
+    for (var ac = airrCol; ac < headers.length; ac++) {
+      var am = parseTermHeader_(norm[ac]);
+      if (am !== null) airrCols.push({ col: ac, meses: am });
+    }
   }
 
-  if (termCols.length === 0) {
+  var mode = "ambos";
+  var termCols = [];
+  var usados = {};
+  for (var c = 0; c < endCol; c++) {
+    var g = normalizeName_(groupRow[c]);
+    if (g) {
+      if (/\bno\b/.test(g)) mode = "no";
+      else if (/\bsi\b/.test(g)) mode = "si";
+      else mode = "ambos";
+    }
+    if (c === idxCat || c === idxMin || c === idxSug) continue;
+    var meses = parseTermHeader_(norm[c]);
+    if (meses === null) continue;
+    var key = meses + "|" + mode;
+    if (usados[key]) continue;
+    usados[key] = true;
+    termCols.push({ col: c, meses: meses, mode: mode });
+  }
+
+    if (termCols.length === 0 && airrCols.length === 0) {
     throw new Error(
-      'La hoja "' + SHEET_CATEGORIA + '" no tiene columnas de plazo reconocibles ' +
-      '(ej. "12 Cuotas", "15 Cuotas", "18 Cuotas"). Encabezados leídos: ' + headers.join(" | ")
+      'La hoja "' + SHEET_CATEGORIA + '" no tiene columnas de plazo reconocibles. Encabezados leídos: ' +
+      headers.join(" | ")
     );
   }
 
   var byKey = {};
   var order = [];
 
-  for (var i = 1; i < values.length; i++) {
+  for (var i = hr + 1; i < values.length; i++) {
     var row = values[i];
     var nombre = String(row[idxCat] || "").trim();
     if (!nombre) continue;
 
-    var key = normalizeName_(nombre);
-    if (!byKey[key]) {
-      byKey[key] = {
-        nombre: nombre,
-        inicialMinima: null,
-        inicialSugerida: null,
-        plazos: [],
-      };
-      order.push(key);
+    var ck = normalizeName_(nombre);
+    if (!byKey[ck]) {
+      byKey[ck] = { nombre: nombre, inicialMinima: null, inicialSugerida: null, plazosSi: [], plazosNo: [], airr: []  };
+      order.push(ck);
     }
-    var cat = byKey[key];
+    var cat = byKey[ck];
 
-    // Las filas de una misma categoría repiten las reglas: se toma la primera que se pueda interpretar.
     if (!cat.inicialMinima && idxMin !== -1) cat.inicialMinima = parseInitialRule_(row[idxMin]);
     if (!cat.inicialSugerida && idxSug !== -1) cat.inicialSugerida = parseInitialRule_(row[idxSug]);
 
     for (var t = 0; t < termCols.length; t++) {
-      var meses = termCols[t].meses;
-      var yaExiste = cat.plazos.some(function (p) { return p.meses === meses; });
-      if (yaExiste) continue;
+      var tc = termCols[t];
+      var resolved = resolveCellRefs_(row[tc.col], values);
+      var rate = parseTermRate_(resolved, tc.meses);
+      if (!rate) continue;
 
-      var rate = parseTermRate_(row[termCols[t].col], meses);
-      if (rate) {
-        cat.plazos.push({
-          meses: meses,
-          formula: rate.formula,
-          factor: rate.factor,
-          tasaMensual: rate.tasaMensual,
-        });
-      }
+      var plazo = { meses: tc.meses, formula: rate.formula, factor: rate.factor, tasaMensual: rate.tasaMensual };
+      if (tc.mode === "si" || tc.mode === "ambos") cat.plazosSi.push(plazo);
+      if (tc.mode === "no" || tc.mode === "ambos") cat.plazosNo.push(plazo);
+    }
+    for (var a = 0; a < airrCols.length; a++) {
+      var tasa = parseAirr_(row[airrCols[a].col]);
+      if (tasa === null) continue; // "Sin calculo" o vacío = plazo no disponible
+      var mesesA = airrCols[a].meses;
+      var yaEsta = cat.airr.some(function (p) { return p.meses === mesesA; });
+      if (!yaEsta) cat.airr.push({ meses: mesesA, tasa: tasa });
     }
   }
 
   return order.map(function (k) {
     var cat = byKey[k];
-    cat.plazos.sort(function (a, b) { return a.meses - b.meses; });
+    cat.plazosSi.sort(function (a, b) { return a.meses - b.meses; });
+    cat.plazosNo.sort(function (a, b) { return a.meses - b.meses; });
+    cat.airr.sort(function (a, b) { return a.meses - b.meses; });
     return cat;
   });
+}
+
+/** Convierte "L" -> 11, "AA" -> 26 (índice base 0). */
+function colLetterToIndex_(letters) {
+  var n = 0;
+  for (var i = 0; i < letters.length; i++) n = n * 26 + (letters.charCodeAt(i) - 64);
+  return n - 1;
+}
+
+/**
+ * Reemplaza referencias de celda ($L3, $L$2, M3...) por su valor numérico.
+ * Si alguna apunta a algo no numérico ("Sin calculo", vacío), devuelve "Sin calculo".
+ */
+function resolveCellRefs_(cell, values) {
+  if (typeof cell !== "string") return cell;
+  var ok = true;
+  var out = cell.replace(/(^|[^A-Za-z0-9_.])\$?([A-Z]{1,3})\$?(\d+)(?![\d(A-Za-z_])/g,
+    function (m, pre, col, rowN) {
+      var v = (values[Number(rowN) - 1] || [])[colLetterToIndex_(col)];
+      if (typeof v === "number" && isFinite(v)) return pre + "(" + v + ")";
+      ok = false;
+      return m;
+    });
+  return ok ? out : "Sin calculo";
 }
 
 /**
@@ -404,6 +394,18 @@ function extractMultiplier_(text) {
     if (isFinite(v) && v > 1 && v < 3) return v;
   }
   return null;
+}
+/** AIRR de una celda: 0.25, 25 o "25%" -> 0.25. "Sin calculo"/vacío -> null. */
+function parseAirr_(cell) {
+  if (typeof cell === "number") {
+    if (!isFinite(cell) || cell <= 0) return null;
+    return cell > 1 ? cell / 100 : cell;
+  }
+  var m = String(cell || "").match(/^\s*(\d+(?:[.,]\d+)?)\s*%?\s*$/);
+  if (!m) return null;
+  var v = parseFloat(m[1].replace(",", "."));
+  if (!isFinite(v) || v <= 0) return null;
+  return v > 1 ? v / 100 : v;
 }
 
 /** Número desde una celda (acepta números y textos como "$12.855,00"). */
