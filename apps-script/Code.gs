@@ -831,7 +831,7 @@ function appendSummary_(body, data) {
   if (hasContado_(data)) {
     cells = [
       ["DE CONTADO", ""],
-      ["Precio de contado (base)", formatMoney_(data.contadoPrecio)],
+      ["Precio de contado ", formatMoney_(data.contadoPrecio)],
       [ivaContadoLabel_(data), formatMoney_(data.contadoIva)],
       ["TOTAL DE CONTADO", formatMoney_(data.contadoTotal)],
     ];
